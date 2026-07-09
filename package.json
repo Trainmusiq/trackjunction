@@ -1,0 +1,11 @@
+{
+  "name": "trackjunction",
+  "version": "0.1.0",
+  "private": true,
+  "description": "trackjunction (TrainMusiq) — separación de stems + estudio, 100% client-side por defecto",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "test": "echo 'test/separate-file.mjs es un CLI manual (requiere pesos vendorizados grandes) — no corre en CI todavía. Ver docs/especificacion.md.'"
+  }
+}
