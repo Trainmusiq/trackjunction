@@ -1,9 +1,9 @@
 # trackjunction — Especificación del proyecto
 
 **Ecosistema:** trainmusiq (ver `trainmusiq/trainmusiq` — roadmap.md, manual-continuidad.md, brief-diseno.md) · **Herramienta:** trackjunction — el empalme que divide la canción en vías: separación de stems + estudio (mute/solo, tempo, loops)
-**Versión:** 0.1 · 9 de julio de 2026 (sesión de apertura de etapa — pasos 1-3 del método, manual-continuidad.md §4: benchmark, prototipo mínimo, esta especificación)
+**Versión:** 0.2 · 9 de julio de 2026 (sesión de reevaluación de arquitectura de rendimiento, §10 — previa a la sesión de construcción del pipeline v2.0)
 **Autor:** Juanma (Punta Arenas) con Claude
-**Estado:** pre-etapa. Benchmark de motor hecho con evidencia propia (§3), prototipo mínimo funcional (§3), spec completa (este documento) incluyendo la arquitectura cliente/servidor proyectada desde el día uno (§7). **No construido todavía**: esta sesión no abre la construcción del pipeline v2.0 (regla del método — spec antes de construir, no a medias).
+**Estado:** pre-etapa. Benchmark de motor hecho con evidencia propia (§3), prototipo mínimo funcional (§3), spec completa incluyendo la arquitectura cliente/servidor proyectada desde el día uno (§7), y ahora la cascada de rendimiento del cliente decidida y medida con evidencia propia (§10). **No construido todavía**: esta sesión tampoco abre la construcción del pipeline v2.0 (regla del método — spec antes de construir, no a medias).
 
 **Nombre:** "trackjunction" — el empalme ferroviario que divide la canción en vías (stems); "track" es pista de audio Y vía férrea, doble sentido intencional.
 
@@ -201,3 +201,117 @@ Ver `trainmusiq/trainmusiq/CLAUDE.md` para las reglas transversales (GPL v3, sin
 - **Verificación WASM del motor de separación: hecha en esta sesión** (§2), repetir si se actualiza el vendor.
 - **Los pesos del modelo (84 MB) están commiteados directo por ahora** — evaluar Git LFS o GitHub Release asset antes del release público, para no inflar el clone de cada colaborador (ver `vendor/demucs-weights/README.md`).
 - **Cuando se construya la Fase A (servidor)**: ahí empieza la seguridad seria — el checklist completo de auth/uploads/pagos/rate-limiting de §7.3 no está implementado, solo diseñado. No subestimar el tiempo al abrir esa fase (regla ya anotada en el ecosistema).
+
+## 10. Arquitectura de rendimiento de la separación — cascada de vías (sesión de reevaluación, 9 jul 2026)
+
+**Motivo de esta sesión:** antes de construir el pipeline v2.0, reevaluar qué palancas de velocidad existen que **no** cuesten calidad, con evidencia medida en este equipo (Apple M1 Max, 10 núcleos, 32 GB RAM, Chrome 149, macOS) — no solo por reputación. Esta sección no reabre la decisión de motor del §2 (demucs.cpp sigue siendo la base universal); añade capas de velocidad sobre esa base y evalúa WebGPU como vía adicional, no como reemplazo.
+
+### 10.0 Principios rectores (inviolables, declarados para esta sesión)
+
+**A. La calidad de separación es sagrada.** Ninguna palanca de esta sección reduce cálculo (sin modelos livianos, sin cuantización con pérdida, sin menos pasadas). Todas las vías usan el modelo de máxima calidad — `htdemucs_ft` (fine-tuned) o la arquitectura Hybrid-Transformer v4 completa sin cuantizar — en todas partes. Las únicas palancas válidas son: repartir el mismo cálculo entre más unidades de ejecución (núcleos, GPU) o vectorizarlo (SIMD), nunca reducirlo.
+
+**B. Transparencia de recursos.** El usuario siempre ve qué motor lo acelera, de qué depende, y si está disponible (ver §10.5 para el copy exacto de cada vía) — mismo principio de progreso honesto ya vigente (regla dura #4).
+
+### 10.1 Resumen de evidencia medida en este equipo
+
+| Palanca | Método de medición | Resultado | Estado |
+|---|---|---|---|
+| SIMD en WASM | Disassembly de `demucs.wasm` vendorizado (`wabt`, 7471 opcodes `v128`/`i8x16`/etc., 0 menciones thread/atomic) | **Ya incluido** en el build actual — el benchmark de 3.49-3.70x del §2 YA es con SIMD | ✓ confirmado, sin acción pendiente |
+| Segment-parallel Web Workers | `worker_threads` de Node, cada uno con su propia instancia WASM, audio real de 5s/segmento | N=2: 1.94x · N=4: 3.35x · N=8: 4.78x (ver 10.3) | ✓ medido con audio real, sin SharedArrayBuffer |
+| Warm start (reutilizar modelo entre canciones) | `modelInit` medido por separado de `modelDemixSegment`, dos "canciones" seguidas en el mismo proceso | `modelInit`: 155-273ms · separación 5s: ~18-22s → overhead ≈1.1% del total de una canción | ✓ medido, real pero menor |
+| coi-serviceworker (COOP/COEP sin control de servidor) | Servidor estático plano (`python3 -m http.server`, sin headers custom — mismas condiciones que GitHub Pages) + Chrome real | `crossOriginIsolated` pasa de `false` a `true`, `SharedArrayBuffer` queda disponible, tras el reload automático del script | ✓ confirmado empíricamente — pero ver 10.4, no se usa en v2.0 |
+| WebGPU disponible en este equipo | `navigator.gpu.requestAdapter()` en Chrome real | Adapter obtenido correctamente | ✓ confirmado (este equipo puede usar la vía WebGPU) |
+| Benchmark real de demucs-rs (WebGPU) end-to-end | Se intentó en la demo pública (`nikhilunni.github.io/demucs-rs`) con un clip sintético (no se subió audio real/con copyright a un servicio de terceros) | **Bloqueado por sandbox de la sesión** (no se pudo adjuntar el archivo al `<input type=file>`) | ⚠ no medido — pendiente para la sesión de construcción, con carga manual del usuario |
+| Build WASM con pthreads reales (hilos compartidos dentro de una instancia) | Investigación del upstream `sevagh/demucs.cpp` | El propio `src_wasm/CMakeLists.txt` upstream **no tiene flags de pthread** — no existe una base de la que partir, y no hay `emcc`/`emsdk` instalado en este equipo | ⚠ no intentado — ver 10.4, decisión de no perseguirlo por ahora |
+
+### 10.2 Vía WebGPU — demucs-rs
+
+- **Repo:** [nikhilunni/demucs-rs](https://github.com/nikhilunni/demucs-rs) (Rust + Burn). **Licencia: Apache 2.0** — compatible con GPL v3 (permisiva, se puede incorporar código Apache 2.0 en un proyecto GPL v3).
+- **Modelos disponibles: `htdemucs` (4 stems), `htdemucs_6s` (6 stems), `htdemucs_ft` (fine-tuned, 333 MB, mejor calidad)** — arquitecturas originales de Meta portadas a Rust, **no cuantizadas**. Para cumplir el principio A, la vía WebGPU debe cargar `htdemucs_ft` (o `htdemucs_6s` cuando se adopte 6-stems), nunca la variante base si hay una de mayor calidad disponible.
+- **Verificación de threading (bundle JS de producción, grep directo):** 0 menciones de `SharedArrayBuffer`, `pthread`, `Atomics.` — la paralelización es 100% GPU (WebGPU compute), no requiere COOP/COEP. Confirmado `hasWebgpu: true` en el bundle.
+- **Sin fallback a CPU** (ya documentado en §2) — si `navigator.gpu` no existe o `requestAdapter()` devuelve `null`, esta vía no aplica y se cae a 10.3. El frontend debe detectar esto en runtime, nunca asumir.
+- **Cobertura de navegadores (refinada esta sesión, jul 2026):** ~82-85% global. El hueco principal ya no es Safari (Safari 26+ lo soporta por defecto) sino **Firefox, que sigue con WebGPU deshabilitado por defecto** a mediados de 2026 — más huecos reales en Android <12 y GPUs sin soporte Vulkan/Metal/D3D12 adecuado.
+- **Nota de honestidad:** este equipo SÍ tiene WebGPU funcional (adapter obtenido en Chrome real), pero el benchmark de tiempo real end-to-end de demucs-rs **no se pudo medir en esta sesión** — el sandbox de la herramienta de navegador no permite adjuntar archivos que no fueron compartidos explícitamente por el usuario con la sesión, y no correspondía subir audio real con copyright a un servicio de terceros para una prueba sintética. **Pendiente para la sesión de construcción**: medir con el usuario subiendo un archivo de prueba manualmente.
+
+### 10.3 Vía WASM sin WebGPU — segment-parallel Web Workers (SIMD ya incluido)
+
+**Este es el hallazgo central de la sesión:** el "multi-threading" que de verdad conviene no es hilos compartidos dentro de una instancia WASM (que requeriría COOP/COEP + una reconstrucción no trivial del motor, ver 10.4) sino **N Workers independientes, cada uno con su propia instancia WASM y su propia copia de memoria, procesando un segmento de tiempo distinto de la canción** — exactamente el patrón ya proyectado en §3 ("un Worker por núcleo lógico... sin SharedArrayBuffer en ningún punto"), ahora medido con audio real en vez de asumido.
+
+**Metodología:** `worker_threads` de Node (equivalente a Web Workers del navegador para este propósito — misma ausencia de memoria compartida), cada worker carga el mismo `demucs.wasm`+pesos vendorizados, corre `modelInit` y separa un segmento de 5s de audio real (`5 Pétalo de Sal_440Hz.wav`, cross-repo desde `Centrail/test/private/`, nunca commiteado ni referenciado en código).
+
+| N workers en paralelo | Audio total procesado | Wall time real | Tiempo secuencial equivalente (N × baseline) | Speedup medido |
+|---|---|---|---|---|
+| 1 (baseline) | 5s | 18.7s | — | 1.0x |
+| 2 | 10s | 19.2s | 37.4s | **1.94x** |
+| 4 | 20s | 22.3s | 74.7s | **3.35x** |
+| 8 | 40s | 31.2s | 149.4s | **4.78x** |
+
+El número de 4.78x a 8 workers **confirma y supera** el 4.5x que el roadmap tenía anotado como "número del mantenedor de demucs.cpp, no medido en este equipo" (§2) — ahora es evidencia propia. La caída de retorno entre N=4 y N=8 es consistente con el hardware: el M1 Max de este equipo tiene 10 núcleos lógicos (8 rendimiento + 2 eficiencia); a 8 workers ya se satura casi toda la capacidad de cómputo real.
+
+**SIMD:** confirmado por disassembly (`wabt`) que el `demucs.wasm` vendorizado actual ya contiene 7471 opcodes SIMD (`v128.*`, `i8x16`, etc.) y cero menciones de threading — el build recipe (`CMakeLists.txt.build-recipe`) ya tenía `-msimd128 -msse4.2` en `CMAKE_CXX_FLAGS_RELEASE` desde que se vendorizó. **No hay una "recompilación con SIMD" pendiente: ya está aplicada**, y el número base de 3.49-3.70x tiempo real del §2 ya la incluye. Recompilar sin SIMD para aislar la ganancia sería el único experimento adicional posible, pero no aporta una decisión nueva (SIMD se queda, sin downside).
+
+**Zero SharedArrayBuffer/COOP/COEP necesarios para esta vía** — funciona en GitHub Pages sin ningún cambio de configuración, hoy mismo.
+
+**Advertencia de calidad (principio A) para la sesión de construcción:** `modelDemixSegment` no hace streaming/chunking interno — trata cada buffer pasado como una unidad completa (§3). Cortar la canción en segmentos de tiempo duros y arbitrarios entre Workers **puede degradar la calidad en los bordes de cada segmento** (el modelo pierde contexto temporal alrededor del corte) si no se implementa con solape (overlap) y crossfade entre segmentos adyacentes — igual que hace el propio Demucs en su chunking nativo. Esto no es opcional bajo el principio A: la implementación real (fuera de alcance de esta sesión) debe usar segmentos con solape suficiente (varios segundos de contexto compartido) y recombinar con crossfade, no un corte seco.
+
+**Warm start (pesos cargados una vez, reutilizados entre canciones):** medido con dos "canciones" seguidas en el mismo proceso — `modelInit` (parseo de 84MB de pesos hacia el modelo) toma 155-273ms, frente a ~18-22s de separación por segmento de 5s → **el overhead de re-inicializar es ≈1.1% del total de una canción real, y cae a fracciones de 1% en una canción completa de minutos**. Es una palanca real pero menor: vale la pena mantener el Worker/modelo vivo entre canciones de una misma sesión (evita pagar ese ~1% N veces), pero no es donde está la ganancia grande — esa es la paralelización por segmentos (arriba). Nota adicional: el `initMs` promedio sube levemente con más workers en paralelo (214ms→230ms→235ms→273ms para N=1,2,4,8) — contención de CPU esperable al inicializar N modelos a la vez, no un problema de fondo.
+
+### 10.4 coi-serviceworker + pthreads reales — investigado, decisión: no perseguir para v2.0
+
+Se confirmó empíricamente (servidor estático plano sin headers custom, mismas condiciones que GitHub Pages) que [gzuidhof/coi-serviceworker](https://github.com/gzuidhof/coi-serviceworker) (MIT, compatible GPL v3) **sí logra `crossOriginIsolated: true` y `SharedArrayBuffer` disponible** tras el reload automático de primera visita, sin necesitar control de headers del servidor. Esto técnicamente abriría la puerta a un build de `demucs.cpp` con hilos compartidos reales (pthreads de Emscripten) dentro de una sola instancia WASM.
+
+**Pero no se persigue esta vía para v2.0**, por dos razones con evidencia:
+1. **No existe una base de la que partir:** el propio `src_wasm/CMakeLists.txt` del upstream `sevagh/demucs.cpp` no tiene ningún flag de pthread (`USE_PTHREADS`, `SHARED_MEMORY`, etc.) — habría que portar Eigen/OpenMP a WASM+pthreads desde cero, algo frágil y no documentado por nadie que lo haya hecho para este proyecto específico. Tampoco hay `emcc`/`emsdk` instalado en este equipo para siquiera empezar a intentarlo esta sesión.
+2. **No hace falta:** la vía de 10.3 (Workers independientes por segmento, sin memoria compartida) ya logra un speedup casi lineal (4.78x a 8 workers) con muchísimo menor riesgo de ingeniería y sin tocar el motor vendorizado. El techo real de esta vía coincide con los núcleos disponibles, igual que tendría el pthread real — no hay ganancia adicional obvia que justifique el riesgo.
+
+**Se deja documentado y confirmado como técnicamente viable** por si una sesión futura encuentra un techo real en 10.3 que amerite revisar esto (p.ej. si Eigen ya trae un backend de threading portable a WASM en una versión futura del upstream).
+
+### 10.5 Cascada final de rendimiento (decisión)
+
+Todas las vías cargan **el mismo modelo de máxima calidad** (`htdemucs_ft` o equivalente Hybrid-Transformer v4 sin cuantizar) — la cascada decide *dónde* corre el cálculo, nunca *cuánto* cálculo se hace.
+
+```
+¿navigator.gpu existe y requestAdapter() devuelve un adaptador? ──Sí──▶ Vía WebGPU (demucs-rs, htdemucs_ft)
+        │ No
+        ▼
+¿Web Workers disponibles? (prácticamente 100% de navegadores modernos)
+        │ Sí ──▶ Vía WASM segment-parallel (N = navigator.hardwareConcurrency workers,
+        │         SIMD ya incluido, sin COOP/COEP) — degrada con gracia a N=1 si hardwareConcurrency
+        │         no está disponible o reporta 1, misma calidad
+        ▼
+Tier servidor (§7, pago, para quien quiera velocidad garantizada sin depender del hardware propio)
+```
+
+No hay una "vía estándar de un núcleo" separada de la vía WASM: es el mismo código con N=1, degradación automática y transparente, sin perder calidad.
+
+### 10.6 Mensajes de transparencia de recursos (UI, copy definitivo para la sesión de construcción)
+
+Siguiendo la regla de copy (#8: sincero, directo, afectivo, disuasivo no imperativo, detalle técnico secundario):
+
+- **Vía WebGPU:** "Usando la GPU de tu equipo — la vía más rápida." *(detalle expandible: "WebGPU activo, modelo htdemucs_ft, sin reducir calidad.")*
+- **Vía WASM multi-núcleo:** "Sin GPU compatible; usando los N núcleos de tu equipo." *(detalle expandible: "Workers en paralelo, mismo modelo que la vía GPU — más lento pero misma calidad de separación. Más rápido con más núcleos.")*
+- **Vía WASM single-thread** (degradación automática si N=1): "Procesando en un núcleo — puede tardar. Mismo modelo, misma calidad." *(sin urgencia ni disculpa — informa y sigue.)*
+- **Tier servidor (si está activo):** "Procesando en nuestro servidor — minutos se vuelven segundos." *(no se ofrece como "más calidad", solo como velocidad — coherente con §1.)*
+
+### 10.7 % de usuarios estimado por escalón
+
+- **WebGPU (~82-85% de navegadores modernos globalmente, jul 2026)** — pero condicionado a que el usuario tenga un navegador con WebGPU habilitado por defecto (Chrome/Edge/Safari 26+/Opera/Samsung Internet); Firefox (aún deshabilitado por defecto a mediados de 2026) es el hueco más grande hoy, no Safari como se pensaba en el §2 original.
+- **WASM segment-parallel (el resto, ~15-18%)** — prácticamente todos con multi-núcleo real hoy en día (hardware de un solo núcleo es marginal en 2026), así que casi nadie cae al single-thread puro salvo casos extremos (dispositivos muy limitados, o `hardwareConcurrency` no expuesto).
+- **Tier servidor** — no es parte de esta cascada gratuita, es una elección explícita del usuario (suscripción), independiente del hardware que tenga.
+
+**Nota de honestidad:** el % exacto de Firefox con WebGPU habilitado manualmente (flag) vs. la mayoría con default off no se midió con datos de uso propios — es un estimado de cobertura global de mercado (caniuse.com, jul 2026), no de la audiencia real de trackjunction (que no existe todavía, pre-lanzamiento). Revisar con datos reales cuando haya usuarios.
+
+### 10.8 Confirmación: ninguna vía toca la calidad (principio A)
+
+- **WebGPU:** mismo modelo (`htdemucs_ft`), mismos cálculos, ejecutados en GPU — la GPU no aproxima ni reduce el cómputo, lo paraleliza a nivel de hardware.
+- **WASM segment-parallel:** mismo modelo, mismos cálculos exactos, repartidos entre Workers por segmento de tiempo (paralelismo de datos, no de algoritmo) — con la advertencia de overlap/crossfade de 10.3, que es un requisito de implementación para preservar calidad, no una concesión a la velocidad.
+- **SIMD:** vectoriza las mismas operaciones aritméticas de punto flotante — ya estaba presente desde el vendorizado original junto con `-ffast-math` (flag preexistente, no introducida en esta sesión), sin cambio de precisión adicional.
+- **Warm start:** no toca el cálculo en absoluto, solo evita repetir el parseo de pesos.
+- **Ninguna vía usa un modelo reducido, cuantizado con pérdida, ni menos pasadas.** La única variable entre vías es *dónde* y *con cuánta paralelización* corre el mismo cálculo.
+
+### 10.9 Seguridad y GitHub Pages — verificación de esta sesión
+
+- Vía WebGPU (demucs-rs): sin `SharedArrayBuffer`/`pthread`/`Atomics` en el bundle de producción (grep directo confirmado) — no necesita COOP/COEP.
+- Vía WASM segment-parallel: sin cambios respecto a la verificación de seguridad ya hecha en §2 (motor vendorizado sin hilos) — Workers independientes no comparten memoria, no necesitan COOP/COEP.
+- **No se adopta coi-serviceworker para v2.0** (ver 10.4) — nada nuevo que romper en GitHub Pages ni superficie de ataque adicional (un service worker interceptando todas las requests sí sería una superficie a vigilar si se adoptara en el futuro).
+- Nada de lo investigado en esta sesión requiere configuración de servidor ni headers especiales en GitHub Pages.
