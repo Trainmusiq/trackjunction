@@ -1,9 +1,9 @@
 # trackjunction — Especificación del proyecto
 
 **Ecosistema:** trainmusiq (ver `trainmusiq/trainmusiq` — roadmap.md, manual-continuidad.md, brief-diseno.md) · **Herramienta:** trackjunction — el empalme que divide la canción en vías: separación de stems + estudio (mute/solo, tempo, loops)
-**Versión:** 0.2 · 9 de julio de 2026 (sesión de reevaluación de arquitectura de rendimiento, §10 — previa a la sesión de construcción del pipeline v2.0)
+**Versión:** 0.3 · 11 de julio de 2026 (sesión de construcción v2.0 — bloqueada en el primer paso no-negociable, ver §11)
 **Autor:** Juanma (Punta Arenas) con Claude
-**Estado:** pre-etapa. Benchmark de motor hecho con evidencia propia (§3), prototipo mínimo funcional (§3), spec completa incluyendo la arquitectura cliente/servidor proyectada desde el día uno (§7), y ahora la cascada de rendimiento del cliente decidida y medida con evidencia propia (§10). **No construido todavía**: esta sesión tampoco abre la construcción del pipeline v2.0 (regla del método — spec antes de construir, no a medias).
+**Estado:** construcción v2.0 iniciada y **bloqueada**. La verificación de calidad de la paralelización (principio A, no-negociable) encontró que el motor vendorizado no pasa el umbral de -80dB pedido y expuso un bug de no-determinismo (§11) — no se construyó el pipeline de separación en sí. Cascada de rendimiento (§10) revisada con benchmark real de WebGPU medido a mano por el fundador: la evidencia invierte el orden original (Workers WASM primero, WebGPU experimental) — ver §10.5. Selector de calidad por modelo documentado como propuesta (§10.10, no implementado).
 
 **Nombre:** "trackjunction" — el empalme ferroviario que divide la canción en vías (stems); "track" es pista de audio Y vía férrea, doble sentido intencional.
 
@@ -221,7 +221,7 @@ Ver `trainmusiq/trainmusiq/CLAUDE.md` para las reglas transversales (GPL v3, sin
 | Warm start (reutilizar modelo entre canciones) | `modelInit` medido por separado de `modelDemixSegment`, dos "canciones" seguidas en el mismo proceso | `modelInit`: 155-273ms · separación 5s: ~18-22s → overhead ≈1.1% del total de una canción | ✓ medido, real pero menor |
 | coi-serviceworker (COOP/COEP sin control de servidor) | Servidor estático plano (`python3 -m http.server`, sin headers custom — mismas condiciones que GitHub Pages) + Chrome real | `crossOriginIsolated` pasa de `false` a `true`, `SharedArrayBuffer` queda disponible, tras el reload automático del script | ✓ confirmado empíricamente — pero ver 10.4, no se usa en v2.0 |
 | WebGPU disponible en este equipo | `navigator.gpu.requestAdapter()` en Chrome real | Adapter obtenido correctamente | ✓ confirmado (este equipo puede usar la vía WebGPU) |
-| Benchmark real de demucs-rs (WebGPU) end-to-end | Se intentó en la demo pública (`nikhilunni.github.io/demucs-rs`) con un clip sintético (no se subió audio real/con copyright a un servicio de terceros) | **Bloqueado por sandbox de la sesión** (no se pudo adjuntar el archivo al `<input type=file>`) | ⚠ no medido — pendiente para la sesión de construcción, con carga manual del usuario |
+| Benchmark real de demucs-rs (WebGPU) end-to-end | Medido a mano por el fundador (11 jul 2026) en el demo público, canción real de 4:47 (287s, 49 chunks) | Chrome+Standard: 519s (1.81x) · Chrome+Fine-Tuned: 1786s (6.22x) · Firefox+6-Stem: 654s (2.28x) — ver §10.2 | ✓ medido con audio real por el usuario (sandbox de la sesión no permitía subir archivos) |
 | Build WASM con pthreads reales (hilos compartidos dentro de una instancia) | Investigación del upstream `sevagh/demucs.cpp` | El propio `src_wasm/CMakeLists.txt` upstream **no tiene flags de pthread** — no existe una base de la que partir, y no hay `emcc`/`emsdk` instalado en este equipo | ⚠ no intentado — ver 10.4, decisión de no perseguirlo por ahora |
 
 ### 10.2 Vía WebGPU — demucs-rs
@@ -231,7 +231,29 @@ Ver `trainmusiq/trainmusiq/CLAUDE.md` para las reglas transversales (GPL v3, sin
 - **Verificación de threading (bundle JS de producción, grep directo):** 0 menciones de `SharedArrayBuffer`, `pthread`, `Atomics.` — la paralelización es 100% GPU (WebGPU compute), no requiere COOP/COEP. Confirmado `hasWebgpu: true` en el bundle.
 - **Sin fallback a CPU** (ya documentado en §2) — si `navigator.gpu` no existe o `requestAdapter()` devuelve `null`, esta vía no aplica y se cae a 10.3. El frontend debe detectar esto en runtime, nunca asumir.
 - **Cobertura de navegadores (refinada esta sesión, jul 2026):** ~82-85% global. El hueco principal ya no es Safari (Safari 26+ lo soporta por defecto) sino **Firefox, que sigue con WebGPU deshabilitado por defecto** a mediados de 2026 — más huecos reales en Android <12 y GPUs sin soporte Vulkan/Metal/D3D12 adecuado.
-- **Nota de honestidad:** este equipo SÍ tiene WebGPU funcional (adapter obtenido en Chrome real), pero el benchmark de tiempo real end-to-end de demucs-rs **no se pudo medir en esta sesión** — el sandbox de la herramienta de navegador no permite adjuntar archivos que no fueron compartidos explícitamente por el usuario con la sesión, y no correspondía subir audio real con copyright a un servicio de terceros para una prueba sintética. **Pendiente para la sesión de construcción**: medir con el usuario subiendo un archivo de prueba manualmente.
+- **Nota de honestidad (sesión anterior):** este equipo SÍ tiene WebGPU funcional (adapter obtenido en Chrome real), pero el benchmark end-to-end no se pudo medir por el sandbox de la herramienta de navegador (no permite adjuntar archivos). **Resuelto en la sesión de construcción (11 jul 2026): el fundador lo midió a mano.**
+
+#### Benchmark real medido a mano (11 jul 2026, fundador)
+
+Canción real de 4:47 (287s), 49 chunks (~5.86s/chunk — coincide con el stride interno del modelo, `(1-OVERLAP)×SEGMENT_LEN_SECS = 0.75×7.8 = 5.85s`, ver §11.3):
+
+| Vía | Tiempo total | Ratio vs tiempo real | Patrón de calentamiento (primeros chunks) |
+|---|---|---|---|
+| Chrome + Standard (4-stem) | 519s | **1.81x** | chunk1=42s, chunk2=31s, chunk23=12s, chunk36=11s (estabiliza ~11-12s/chunk) |
+| Chrome + Fine-Tuned (`htdemucs_ft`) | 1786s | **6.22x** | ~44-45s constante, sin calentamiento aparente (consistente con `ft` = bag de 4 modelos, más trabajo por chunk desde el principio) |
+| Firefox + 6-Stem | 654s | **2.28x** | 47s→33s→11s (calienta más rápido que Chrome+Standard, se estabiliza a un ritmo similar) |
+
+**Comparación contra la proyección de Workers WASM paralelos (§10.3, mismo equipo, modelo Standard):** con el baseline single-thread medido (3.49-3.70x) y el speedup de 4.78x a N=8, el ratio efectivo proyectado es **≈0.75x tiempo real** (3.6x ÷ 4.78 ≈ 0.753x) — es decir, **más rápido que el tiempo real**, y sustancialmente más rápido que CUALQUIERA de los tres números de WebGPU medidos arriba (0.75x vs 1.81x/2.28x/6.22x).
+
+**Decisión de orden de cascada, con esta evidencia:** se invierte la hipótesis de partida de §10 (WebGPU primario) — **la evidencia real apunta a Workers WASM paralelos como vía primaria, con WebGPU como vía experimental/pendiente de madurar**, no al revés. Ver §10.5 para la cascada revisada.
+
+**Sesgos declarados de este dato (ninguno invalida la dirección de la conclusión, pero acotan su precisión):**
+1. **Hardware de la GPU no confirmado como el mismo equipo de las mediciones WASM** — el fundador midió `demucs-rs` en su navegador, pero no se confirmó que sea la misma GPU/equipo M1 Max usado para los benchmarks de Workers WASM. Una GPU discreta más potente podría acercar la brecha; no se puede descartar sin remedir en el mismo equipo.
+2. **Canción distinta** (4:47/287s vs 2:43/163s de "Pétalo de Sal") — poco probable que cambie el orden de magnitud, pero no es la misma pista.
+3. **`demucs-rs` es UNA implementación específica** (Rust/Burn) — esto no es un veredicto sobre "WebGPU no puede ser rápido para Demucs en general", solo que esta implementación, hoy, no le gana a nuestro enfoque CPU+WASM+paralelo. Otra implementación (o una versión futura más madura de Burn/wgpu) podría cambiar el resultado.
+4. **La proyección de Workers WASM (0.75x) es una extrapolación**, no una medición end-to-end de una canción completa con el motor ya parcheado — y más importante: **§11 encontró que esta vía actualmente NO pasa la verificación de calidad** (no es solo una cuestión de velocidad todavía sin confirmar, es un bloqueo de corrección). La comparación de velocidad es válida y la dirección de la decisión se sostiene, pero no se puede ADOPTAR Workers-paralelo como vía primaria hasta resolver §11.
+5. El patrón de calentamiento (chunks iniciales lentos) sugiere costo de compilación de shaders/pipeline de WebGPU por sesión — en una canción mucho más larga este costo se amortiza mejor (el ratio "estable" de Chrome+Standard, excluyendo los primeros 2 chunks, ronda ~1.6-1.7x, mejor que el 1.81x global pero igual muy por encima de 0.75x).
+6. La comparación Chrome vs Firefox (Standard vs 6-Stem) mezcla DOS variables a la vez (navegador Y cantidad de stems) — no aísla el costo real de los 2 stems extra.
 
 ### 10.3 Vía WASM sin WebGPU — segment-parallel Web Workers (SIMD ya incluido)
 
@@ -266,31 +288,39 @@ Se confirmó empíricamente (servidor estático plano sin headers custom, mismas
 
 **Se deja documentado y confirmado como técnicamente viable** por si una sesión futura encuentra un techo real en 10.3 que amerite revisar esto (p.ej. si Eigen ya trae un backend de threading portable a WASM en una versión futura del upstream).
 
-### 10.5 Cascada final de rendimiento (decisión)
+### 10.5 Cascada final de rendimiento (decisión) — ⚠ REVISADA 11 jul 2026 con benchmark real, ver §11 para el bloqueo vigente
 
-Todas las vías cargan **el mismo modelo de máxima calidad** (`htdemucs_ft` o equivalente Hybrid-Transformer v4 sin cuantizar) — la cascada decide *dónde* corre el cálculo, nunca *cuánto* cálculo se hace.
+**Cambio de orden respecto a la versión anterior de esta sección:** el benchmark real de `demucs-rs` (arriba) muestra que WebGPU, en la única implementación evaluada, es 2.4-8x MÁS LENTO que la proyección de Workers WASM paralelos en este mismo equipo. La hipótesis "WebGPU primero" con la que arrancó esta sesión **no se sostiene con la evidencia medida** — se invierte:
 
 ```
-¿navigator.gpu existe y requestAdapter() devuelve un adaptador? ──Sí──▶ Vía WebGPU (demucs-rs, htdemucs_ft)
-        │ No
-        ▼
 ¿Web Workers disponibles? (prácticamente 100% de navegadores modernos)
         │ Sí ──▶ Vía WASM segment-parallel (N = navigator.hardwareConcurrency workers,
-        │         SIMD ya incluido, sin COOP/COEP) — degrada con gracia a N=1 si hardwareConcurrency
-        │         no está disponible o reporta 1, misma calidad
+        │         SIMD ya incluido, sin COOP/COEP) — VÍA PRIMARIA, más rápida en la
+        │         evidencia real (~0.75x tiempo real proyectado vs 1.81-6.22x de WebGPU medido)
+        │         ⚠ BLOQUEADA hoy por §11 (no pasa la verificación de calidad -80dB) — no
+        │         activar en producción hasta resolver el bug de no-determinismo del motor.
+        ▼ (si Web Workers no disponible, caso extremo)
+¿navigator.gpu existe y requestAdapter() devuelve un adaptador? ──Sí──▶ Vía WebGPU (demucs-rs,
+        │         htdemucs_ft) — EXPERIMENTAL/secundaria: funciona y no depende del bug de §11
+        │         (motor distinto, no vendorizado por trackjunction), pero más lenta que la vía
+        │         primaria en toda la evidencia medida hasta ahora. Útil como respaldo mientras
+        │         WASM esté bloqueado, o si una implementación futura de WebGPU la supera.
         ▼
-Tier servidor (§7, pago, para quien quiera velocidad garantizada sin depender del hardware propio)
+Tier servidor (§7, pago, para quien quiera velocidad garantizada sin depender del hardware propio,
+        y HOY la única vía sin el bloqueo de calidad de §11 para canciones completas)
 ```
 
-No hay una "vía estándar de un núcleo" separada de la vía WASM: es el mismo código con N=1, degradación automática y transparente, sin perder calidad.
+No hay una "vía estándar de un núcleo" separada de la vía WASM: es el mismo código con N=1, degradación automática y transparente, sin perder calidad (una vez resuelto §11).
 
-### 10.6 Mensajes de transparencia de recursos (UI, copy definitivo para la sesión de construcción)
+**Estado real de lanzamiento mientras §11 sigue abierto:** con el motor vendorizado actual, ninguna vía cliente puede procesar con calidad garantizada una canción completa de varios minutos (WASM: bloqueado por §11 si se trocea, y no puede procesar sin trocear por OOM en clips >35-40s; WebGPU: funciona pero es la vía más lenta medida). El tier servidor (§7) es, con la evidencia de hoy, la única vía sin compromiso para canciones completas — ver la nota de decisión en §11.5.
 
-Siguiendo la regla de copy (#8: sincero, directo, afectivo, disuasivo no imperativo, detalle técnico secundario):
+### 10.6 Mensajes de transparencia de recursos (UI, copy definitivo para la sesión de construcción) — ⚠ orden corregido 11 jul 2026
 
-- **Vía WebGPU:** "Usando la GPU de tu equipo — la vía más rápida." *(detalle expandible: "WebGPU activo, modelo htdemucs_ft, sin reducir calidad.")*
-- **Vía WASM multi-núcleo:** "Sin GPU compatible; usando los N núcleos de tu equipo." *(detalle expandible: "Workers en paralelo, mismo modelo que la vía GPU — más lento pero misma calidad de separación. Más rápido con más núcleos.")*
+Siguiendo la regla de copy (#8: sincero, directo, afectivo, disuasivo no imperativo, detalle técnico secundario). **Corrección respecto a la versión anterior:** el copy de WebGPU decía "la vía más rápida" — la evidencia real (§10.2) muestra lo contrario, se corrige aquí.
+
+- **Vía WASM multi-núcleo (primaria, bloqueada por §11 hasta resolver):** "Usando los N núcleos de tu equipo." *(detalle expandible: "Workers en paralelo, mismo modelo en todos — más rápido con más núcleos, misma calidad de separación.")*
 - **Vía WASM single-thread** (degradación automática si N=1): "Procesando en un núcleo — puede tardar. Mismo modelo, misma calidad." *(sin urgencia ni disculpa — informa y sigue.)*
+- **Vía WebGPU (experimental/secundaria):** "Usando la GPU de tu equipo." *(detalle expandible: "WebGPU activo, modelo htdemucs_ft, sin reducir calidad — en la evidencia medida hoy, esta vía puede ser más lenta que usar varios núcleos de CPU; preferimos CPU cuando ambas están disponibles.")*
 - **Tier servidor (si está activo):** "Procesando en nuestro servidor — minutos se vuelven segundos." *(no se ofrece como "más calidad", solo como velocidad — coherente con §1.)*
 
 ### 10.7 % de usuarios estimado por escalón
@@ -315,6 +345,28 @@ Siguiendo la regla de copy (#8: sincero, directo, afectivo, disuasivo no imperat
 - Vía WASM segment-parallel: sin cambios respecto a la verificación de seguridad ya hecha en §2 (motor vendorizado sin hilos) — Workers independientes no comparten memoria, no necesitan COOP/COEP.
 - **No se adopta coi-serviceworker para v2.0** (ver 10.4) — nada nuevo que romper en GitHub Pages ni superficie de ataque adicional (un service worker interceptando todas las requests sí sería una superficie a vigilar si se adoptara en el futuro).
 - Nada de lo investigado en esta sesión requiere configuración de servidor ni headers especiales en GitHub Pages.
+
+### 10.10 Nueva dimensión — selector de calidad de modelo (propuesta de producto, NO implementar todavía)
+
+Hasta ahora la cascada de §10.5 decide *dónde* corre el cálculo (CPU/GPU/servidor) con calidad fija (siempre el mejor modelo). El benchmark real de `htdemucs_ft` (§10.2) abre una SEGUNDA dimensión, independiente: *cuánto* modelo correr — `htdemucs_ft` (fine-tuned, bag de ~4 modelos) mide **6.22x/1.81x ≈ 3.44x** más lento que el modelo Standard en la misma vía (WebGPU, Chrome) — consistente con la estimación de "~4x" del fundador, dado que es efectivamente correr ~4 modelos y promediar.
+
+**Propuesta: selector de calidad honesto, con tiempo estimado por vía**, mismo espíritu que la transparencia de recursos de §10.6 — el usuario elige, ve el costo real, no hay sorpresa:
+
+| Nivel | Modelo | Vía | Proyección para "Pétalo de Sal" (2:43, 163s) | Proyección para el archivo de prueba (4:47, 287s) |
+|---|---|---|---|---|
+| **Alta** | `htdemucs` (Standard, 4 stems) | WASM Workers paralelos (⚠ bloqueada por §11) | ~122s (≈2.0 min) | ~215s (≈3.6 min) |
+| **Máxima** | `htdemucs_ft` (fine-tuned, ~4x Standard) | WASM Workers paralelos (⚠ bloqueada por §11) | ~489s (≈8.2 min) | ~861s (≈14.4 min) |
+| **Máxima en servidor** | `htdemucs_ft` o mejor (§7, PyTorch nativo, GPU dedicada) | Servidor (premium) | ⚠ no medido, estimado ~60-100s | ⚠ no medido, estimado ~60-120s |
+
+**Copy propuesto para el selector** (a validar con el fundador, coherente con #8 — sincero, sin sobre-explicar):
+- "Alta — rápida, para escuchar y practicar (~2 min)"
+- "Máxima — la mejor separación que este modelo puede dar, más lenta (~8 min)"
+- "Máxima en servidor — la misma calidad máxima, en segundos (premium)"
+
+**Notas de honestidad:**
+- Las proyecciones de la vía WASM (Alta y Máxima) dependen de que se resuelva el bloqueo de §11 — no se pueden ofrecer hoy con el motor actual.
+- El costo del tier servidor con `htdemucs_ft` **no está medido** — la estimación de §7.5 (~15-25s) es para el modelo Standard; se asume que un GPU dedicado absorbe el ~4x de `htdemucs_ft` sin llegar a sentirse lento (¿60-100s?), pero es una extrapolación, no una medición — medir en la sesión que abra la Fase A del servidor.
+- Esta sección es solo la propuesta documentada, tal como pidió el fundador — **no se implementa el selector en esta sesión**, queda para su decisión.
 
 ## 11. Verificación de calidad de la paralelización — principio A NO cumplido, sesión de construcción v2.0 (11 jul 2026)
 
