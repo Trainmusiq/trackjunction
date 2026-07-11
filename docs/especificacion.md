@@ -301,13 +301,13 @@ Siguiendo la regla de copy (#8: sincero, directo, afectivo, disuasivo no imperat
 
 **Nota de honestidad:** el % exacto de Firefox con WebGPU habilitado manualmente (flag) vs. la mayoría con default off no se midió con datos de uso propios — es un estimado de cobertura global de mercado (caniuse.com, jul 2026), no de la audiencia real de trackjunction (que no existe todavía, pre-lanzamiento). Revisar con datos reales cuando haya usuarios.
 
-### 10.8 Confirmación: ninguna vía toca la calidad (principio A)
+### 10.8 Confirmación: ninguna vía toca la calidad (principio A) — ⚠ CORRECCIÓN, ver §11
 
-- **WebGPU:** mismo modelo (`htdemucs_ft`), mismos cálculos, ejecutados en GPU — la GPU no aproxima ni reduce el cómputo, lo paraleliza a nivel de hardware.
-- **WASM segment-parallel:** mismo modelo, mismos cálculos exactos, repartidos entre Workers por segmento de tiempo (paralelismo de datos, no de algoritmo) — con la advertencia de overlap/crossfade de 10.3, que es un requisito de implementación para preservar calidad, no una concesión a la velocidad.
-- **SIMD:** vectoriza las mismas operaciones aritméticas de punto flotante — ya estaba presente desde el vendorizado original junto con `-ffast-math` (flag preexistente, no introducida en esta sesión), sin cambio de precisión adicional.
-- **Warm start:** no toca el cálculo en absoluto, solo evita repetir el parseo de pesos.
-- **Ninguna vía usa un modelo reducido, cuantizado con pérdida, ni menos pasadas.** La única variable entre vías es *dónde* y *con cuánta paralelización* corre el mismo cálculo.
+- **WebGPU:** mismo modelo (`htdemucs_ft`), mismos cálculos, ejecutados en GPU — la GPU no aproxima ni reduce el cómputo, lo paraleliza a nivel de hardware. Sin cambios respecto a esta afirmación.
+- **WASM segment-parallel:** ⚠ **esta afirmación NO estaba verificada cuando se escribió** — la sesión de verificación de calidad (§11) midió la equivalencia real contra una referencia sin trocear y encontró que **NO se cumple el umbral de -80dB pedido**, con causas todavía no completamente identificadas. No usar segment-parallel (ni troceo en general) en el motor vendorizado actual sin resolver §11 primero.
+- **SIMD:** vectoriza las mismas operaciones aritméticas de punto flotante — ya estaba presente desde el vendorizado original junto con `-ffast-math` (flag preexistente, no introducida en esta sesión), sin cambio de precisión adicional. Sin cambios respecto a esta afirmación.
+- **Warm start:** ⚠ **esta afirmación tampoco estaba verificada** — §11 encontró que reutilizar la misma instancia WASM para múltiples llamadas a `modelDemixSegment` (el patrón exacto de warm start) produce salidas DISTINTAS para la MISMA entrada. Warm start no es seguro con el motor actual hasta resolver ese bug.
+- **Ninguna vía usa un modelo reducido, cuantizado con pérdida, ni menos pasadas** — esto sigue siendo cierto en las tres vías. El problema encontrado en §11 no es de "menos cálculo", es de un bug de corrección/determinismo en el motor vendorizado.
 
 ### 10.9 Seguridad y GitHub Pages — verificación de esta sesión
 
@@ -315,3 +315,42 @@ Siguiendo la regla de copy (#8: sincero, directo, afectivo, disuasivo no imperat
 - Vía WASM segment-parallel: sin cambios respecto a la verificación de seguridad ya hecha en §2 (motor vendorizado sin hilos) — Workers independientes no comparten memoria, no necesitan COOP/COEP.
 - **No se adopta coi-serviceworker para v2.0** (ver 10.4) — nada nuevo que romper en GitHub Pages ni superficie de ataque adicional (un service worker interceptando todas las requests sí sería una superficie a vigilar si se adoptara en el futuro).
 - Nada de lo investigado en esta sesión requiere configuración de servidor ni headers especiales en GitHub Pages.
+
+## 11. Verificación de calidad de la paralelización — principio A NO cumplido, sesión de construcción v2.0 (11 jul 2026)
+
+**Resultado de esta sesión: el principio A ("ninguna palanca de velocidad puede degradar la calidad") NO se pudo confirmar cumplido para segment-parallel Workers (ni para troceo en general) con el motor vendorizado actual, a pesar de un intento de arreglo real (parche del motor, no solo JS). Se paró la investigación por timebox acordado con el fundador, dejando el hallazgo documentado para decidir el siguiente paso.**
+
+### 11.1 Metodología
+
+Clip real de 30s (dentro del límite seguro de memoria, ver hallazgo de OOM abajo), separado de dos formas:
+- **Referencia**: una sola llamada a `modelDemixSegment` sobre el clip completo.
+- **Trozado**: el mismo clip partido en 3 franjas (overlap-add externo, `engine/segment-plan.mjs` + `engine/merge-segments.mjs`, crossfade lineal), cada franja procesada por un Worker independiente (`worker_threads` de Node, cada uno con su propia instancia WASM — mismo patrón que tendría un Web Worker real).
+
+Comparación cuantitativa (`compare_db.mjs`, script de esta sesión): diferencia de pico y RMS en dB, global y específicamente en las costuras (±150ms alrededor de cada corte).
+
+### 11.2 Hallazgo #1: OOM en clips ≥40s (bloqueante, independiente de todo lo demás)
+
+El motor vendorizado (`INITIAL_MEMORY=2048MB` fijo, ver §9 y vendor README) hace `Aborted(OOM)` procesando un único buffer de **40-45s o más**, en este equipo. Confirmado: 30s y 35s funcionan, 40s/45s/60s fallan. **La canción completa (163s) no se puede procesar en una sola llamada bajo ninguna circunstancia con este build.** Esto significa que trocear no es una optimización de velocidad opcional — es la única forma de que el motor procese una canción real de más de ~35s, sea cual sea la estrategia de paralelismo.
+
+### 11.3 Hallazgo #2: causa raíz de la degradación de calidad — normalización por buffer (identificada, parcheada, PERO no resuelve el problema completo)
+
+`demucs.cpp` normaliza cada buffer que recibe por su propia media/desviación estándar (downmix mono, ver `src/model_apply.cpp`: `ref = wav.mean(0); wav = (wav - ref.mean()) / ref.std()`) — igual que el Demucs original en Python, pero calculado sobre lo que sea que se le pase. Medido en el clip real: la franja 0-16s tiene un `std` 32% menor que el clip completo de 30s; la franja 11.7-30s, 17% mayor. Esta discrepancia es matemáticamente irreversible desde JS (reescalar la entrada no cambia el resultado de una normalización por media/desviación propia — es invariante a cualquier transformación afín de su propia entrada).
+
+**Se instaló el toolchain de compilación** (`emsdk` 6.0.2 + `cmake`, dentro de `.build-tools/` del repo, gitignored — ver regla dura #8 de `CLAUDE.md`) y **se parcheó el motor** (`sevagh/demucs.cpp`, mismo commit que el vendor original) para aceptar `use_external_ref`/`external_ref_mean`/`external_ref_std` en `modelDemixSegment`, permitiendo pasar estadísticas calculadas UNA vez sobre toda la canción (`engine/ref-stats.mjs`) a cada Worker. **Verificado que el parche funciona correctamente** (test aislado en procesos separados: usar estadísticas externas que coinciden con las internas da resultado idéntico salvo ruido de punto flotante ~1e-8; alterar deliberadamente `std` ×3 cambia el resultado de forma medible).
+
+**Pero aplicar el parche NO cambió el resultado de la comparación referencia-vs-trozado** (mismos números de diferencia antes y después). Conclusión: la discrepancia de normalización es real y ahora está corregida, pero **no es la causa dominante** del problema — el impacto medido de una distorsión de `std` ×3 (mucho más agresiva que la discrepancia real de ~32%) en la salida es de apenas ~1e-6 de magnitud, muy por debajo de las diferencias de -10 a -30dBFS observadas entre referencia y trozado.
+
+### 11.4 Hallazgo #3 (nuevo, más serio): el motor no es determinista entre llamadas repetidas en la misma instancia
+
+Test aislado: cargar el modelo UNA vez (`modelInit`), y llamar `modelDemixSegment` DOS veces con el **mismo** clip exacto, en el **mismo proceso/instancia WASM**. Resultado: las dos salidas **difieren** (no son idénticas), con una magnitud de diferencia similar a la observada en la comparación referencia-vs-trozado. **Confirmado que este bug existe también en el WASM original sin parchear** (se extrajo la versión pre-parche desde git y se corrió el mismo test) — no es algo introducido por el parche de esta sesión, es un bug preexistente del motor vendorizado (o de cómo Emscripten/Eigen manejan memoria reutilizada entre llamadas — posible lectura de memoria no inicializada en algún buffer de trabajo, no confirmado a nivel de código C++ por falta de tiempo en el timebox).
+
+**Implicancia crítica para "warm start" (§10.3 de esta misma spec, ya escrito en la sesión anterior):** reutilizar la misma instancia/Worker para procesar múltiples canciones (o múltiples franjas) en la misma sesión del navegador **puede producir resultados silenciosamente incorrectos o inconsistentes** a partir de la segunda llamada. Esto invalida la recomendación de warm start tal como estaba escrita en §10.3 hasta que se entienda y arregle esta causa.
+
+**Lo que NO se pudo determinar en el timebox:** si la causa raíz de este bug de no-determinismo es la MISMA que explica la discrepancia grande entre referencia-completa y trozado-por-franjas (hipótesis más probable dado que ambos síntomas tienen magnitud similar y ninguno se explica por normalización), o si son dos bugs distintos. Investigarlo a fondo requeriría instrumentar el C++ (no viable con las herramientas de esta sesión, orientadas a JS) — trabajo para una sesión dedicada.
+
+### 11.5 Decisión y estado
+
+- ✗ **Principio A no cumplido** para ninguna forma de troceo (secuencial o paralelo) del motor vendorizado actual — no se puede afirmar que separar por franjas preserve calidad idéntica.
+- ✓ El parche de normalización externa es una mejora real y correcta (verificada de forma aislada) — se mantiene en el vendor (ver `vendor/demucs-cpp-wasm/README.md`, sección "Parche de normalización externa") porque no tiene downside y es la base necesaria para cualquier intento futuro de resolver el problema completo.
+- ⚠ **No se recomienda construir el pipeline v2.0 sobre segment-parallel Workers todavía** — el hallazgo de esta sección es más grave que un problema de rendimiento: es un problema de corrección del motor. Antes de continuar con el MVP del pipeline (§10, roadmap), se necesita: (a) decidir si se invierte una sesión dedicada a depurar el motor C++ (instrumentación, comparar buffers intermedios paso a paso contra la referencia Python), o (b) evaluar si la vía servidor (§7, PyTorch nativo, sin este límite de memoria ni — presumiblemente — este bug) se adelanta como la única vía de calidad garantizada para canciones completas, dejando el tier cliente limitado a clips cortos (<35s) hasta resolver esto.
+- **No se tocó `engine/adaptive-workers.mjs` ni el resto de la arquitectura de §10** — siguen siendo el diseño correcto SI el motor se arregla; el bloqueo es de corrección del motor, no de arquitectura de orquestación.

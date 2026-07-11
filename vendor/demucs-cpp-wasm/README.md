@@ -31,6 +31,36 @@ No se necesitan headers COOP/COEP. Compatible con GitHub Pages sin configuració
 - Los 4 stems (drums/bass/other/vocals) tienen señal real verificada (energía > 0 en cada uno).
 - Extrapolado a una canción de 2:43 (163.3 s, mismo archivo, medido también con PyTorch nativo más abajo): ≈ 9.5 min con un solo hilo WASM; con paralelismo de 8 Web Workers (patrón usado por freemusicdemixer.com, sin SharedArrayBuffer — cada Worker con su propia instancia WASM procesando un segmento distinto) el propio mantenedor reporta ~4.5× de mejora ⇒ estimado ≈ 2.1 min para el prototipo final con Workers.
 
+## Parche de normalización externa (sesión de construcción v2.0, 11 jul 2026)
+
+**Qué se tocó respecto al upstream** (además del fix de memoria de arriba), en el commit vendorizado de `sevagh/demucs.cpp`:
+
+- `src/model.hpp`: `demucs_inference()` gana 3 parámetros nuevos con default: `bool use_external_ref = false, float external_ref_mean = 0.0f, float external_ref_std = 1.0f`.
+- `src/model_apply.cpp`: cuando `use_external_ref` es `true`, usa `external_ref_mean`/`external_ref_std` en vez de calcular media/desviación internamente sobre el buffer recibido.
+- `src_wasm/demucs.cpp`: `modelDemixSegment` gana los mismos 3 parámetros al final de su firma (`..., bool batch_mode_param, bool use_external_ref, float external_ref_mean, float external_ref_std)`), los reenvía a `demucs_inference`.
+
+**Por qué:** el motor normaliza cada buffer que recibe por su propia media/desviación (downmix mono, ver comentario en `model_apply.cpp`) — correcto solo cuando el buffer es la canción completa. Al trocear una canción en franjas (obligatorio por el límite de memoria de arriba), cada franja normalizaba con SUS PROPIAS estadísticas locales, distintas a las de la canción completa. `engine/ref-stats.mjs` calcula las estadísticas una vez sobre toda la canción y `engine/separate.mjs` las pasa a través de este parche. Detalle completo, con números medidos, en `docs/especificacion.md` §11.
+
+**Gotcha de compilación:** el primer intento usó `NaN` como sentinel ("no hay valor externo") en vez de un flag `bool` — **falló en runtime** (`RuntimeError: float unrepresentable in integer range`) porque `-ffast-math` (ya en `CMakeLists.txt` de este vendor) puede optimizar `std::isnan()` para que siempre devuelva `false`, haciendo que el código SIEMPRE tomara la rama de "usar valor externo" incluso con NaN de verdad. Se corrigió usando el flag `bool` explícito de arriba. **Cualquier parche futuro de este motor debe usar flags bool explícitos para esta clase de "¿hay un valor externo o no?", nunca detección de NaN**, mientras se mantenga `-ffast-math`.
+
+**Cómo reconstruir** (toolchain en `.build-tools/` del repo, no versionado — ver regla dura #8 de `CLAUDE.md`):
+```
+source .build-tools/emsdk/emsdk_env.sh
+cd .build-tools/demucs.cpp/build-wasm
+emcmake cmake ../src_wasm -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_BUILD_TYPE=Release
+emmake make -j4
+cp demucs.js demucs.wasm ../../../vendor/demucs-cpp-wasm/
+```
+(`CMAKE_BUILD_TYPE=Release` es necesario para que se apliquen `-msimd128 -msse4.2` de `CMAKE_CXX_FLAGS_RELEASE` — sin esto, el build falla al incluir `<nmmintrin.h>` sin los flags de SSE habilitados.)
+
+**⚠ Si se re-vendoriza desde upstream (nueva versión de `sevagh/demucs.cpp`), hay que reaplicar este parche a mano** — no es parte del repo upstream, se perdería silenciosamente en una actualización ingenua.
+
+## ⚠ Bug no resuelto: no-determinismo entre llamadas repetidas (11 jul 2026)
+
+**Confirmado (con y sin el parche de arriba, incluyendo en el WASM original sin parchear extraído de git):** llamar `modelDemixSegment` dos veces con el MISMO clip exacto, en la MISMA instancia WASM (sin recargar el módulo), da salidas DISTINTAS. Es decir, **el motor no es determinista entre llamadas repetidas de la misma sesión**. Esto es un bug pre-existente del motor vendorizado (o de cómo Emscripten/Eigen reutilizan memoria entre llamadas — no diagnosticado a nivel de código C++ por falta de tiempo).
+
+**Implicancia:** no es seguro reutilizar una instancia WASM cargada ("warm start", ver `docs/especificacion.md` §10.3) para procesar múltiples canciones o franjas en la misma sesión — la segunda llamada en adelante puede dar resultado distinto (posiblemente incorrecto) al de una instancia recién cargada. Detalle completo y metodología de la prueba en `docs/especificacion.md` §11.4. **No usar warm start hasta resolver esto.**
+
 ## Pesos del modelo
 
 Ver `vendor/demucs-weights/README.md`.

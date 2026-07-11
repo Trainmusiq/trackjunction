@@ -13,10 +13,27 @@
 // clásico. En un Worker de producción se carga con `importScripts()` y se usa
 // `self.libdemucs`; en Node (para testear este wrapper) se usa `createRequire`.
 
-import { createRequire } from "node:module";
+import NodeModule from "node:module";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 let modulePromise = null;
 let weightsPromise = null;
+
+// Hallazgo de sesión (jul 2026): en Node ≥22 con package.json "type":"module",
+// require() de un .js UMD sin `export` estático lo trata como ESM (interop
+// require(esm)) y devuelve un namespace vacío en vez de ejecutar el UMD como
+// CommonJS. Se fuerza la interpretación CJS compilando el archivo manualmente
+// con la API interna de Module — solo importa en Node (testing); en un Worker
+// de navegador esto no aplica (importScripts es siempre clásico).
+function requireAsCJS(absPath) {
+  const m = new NodeModule(absPath, null);
+  m.filename = absPath;
+  m.paths = NodeModule._nodeModulePaths(path.dirname(absPath));
+  m._compile(fs.readFileSync(absPath, "utf8"), absPath);
+  return m.exports;
+}
 
 function loadLibdemucsFactory() {
   const isNode = typeof process !== "undefined" && process.versions?.node;
@@ -24,8 +41,8 @@ function loadLibdemucsFactory() {
     // El módulo asume contexto Worker para su logging (EM_JS -> postMessage);
     // en Node (solo para test/*.mjs, nunca en producción) se stubea como no-op.
     if (typeof globalThis.postMessage !== "function") globalThis.postMessage = () => {};
-    const require = createRequire(import.meta.url);
-    return require("../vendor/demucs-cpp-wasm/demucs.js");
+    const demucsJsPath = fileURLToPath(new URL("../vendor/demucs-cpp-wasm/demucs.js", import.meta.url));
+    return requireAsCJS(demucsJsPath);
   }
   if (typeof importScripts === "function") {
     // Worker: importScripts es síncrono y clásico, no ESM.
@@ -57,11 +74,20 @@ function loadWeights(weightsSource) {
 const STEM_NAMES_4 = ["drums", "bass", "other", "vocals"];
 
 /**
- * @param {{channelData: Float32Array[], sampleRate: number, weights: string|ArrayBuffer|Uint8Array}} input
+ * @param {{channelData: Float32Array[], sampleRate: number, weights: string|ArrayBuffer|Uint8Array,
+ *   refStats?: {mean:number, std:number}}} input refStats: estadísticas de
+ *   normalización de la canción ENTERA (engine/ref-stats.mjs), a pasar
+ *   cuando `channelData` es solo una FRANJA — si se omite, el motor
+ *   (parcheado, ver vendor/demucs-cpp-wasm/README.md) calcula sus propias
+ *   estadísticas sobre este buffer únicamente, correcto solo si
+ *   `channelData` ya es la canción completa (hallazgo de sesión, ver
+ *   docs/especificacion.md §11: cada franja normalizada con sus propias
+ *   estadísticas locales difiere hasta ~32% de las de la canción completa,
+ *   degradando la separación de forma audible).
  * @param {(p:number, label?:string)=>void} [onProgress]
  * @returns {Promise<{stems: Record<string, Float32Array[]>, sampleRate: number}>}
  */
-export async function separateStems({ channelData, sampleRate, weights }, onProgress) {
+export async function separateStems({ channelData, sampleRate, weights, refStats }, onProgress) {
   onProgress?.(0.02, "cargando motor");
   const Module = await loadModule();
 
@@ -88,13 +114,26 @@ export async function separateStems({ channelData, sampleRate, weights }, onProg
   const outPtrs = [];
   for (let i = 0; i < 8; i++) outPtrs.push(Module._malloc(N * bytesPerFloat));
 
-  onProgress?.(0.2, "separando (single-thread WASM, sin paralelismo todavía)");
+  onProgress?.(0.2, "separando");
+  // Firma completa de _modelDemixSegment tras el parche (ver vendor/demucs-cpp-wasm/README.md):
+  // (left, right, N, left_0..right_3 [4 stems], left_4..right_6 [no usados,
+  // el modelo de 4 fuentes solo llena 0-3], batch_mode_param,
+  // use_external_ref, external_ref_mean, external_ref_std). use_external_ref
+  // es un flag bool explícito (NO se usa NaN como sentinel: bajo -ffast-math,
+  // ya presente en los flags de release, std::isnan() puede optimizarse para
+  // devolver siempre false — un sentinel NaN no es fiable ahí, ver
+  // vendor/demucs-cpp-wasm/README.md).
+  const useExternalRef = refStats != null;
+  const refMean = refStats?.mean ?? 0;
+  const refStd = refStats?.std ?? 1;
   Module._modelDemixSegment(
     inLeftPtr, inRightPtr, N,
     outPtrs[0], outPtrs[1], outPtrs[2], outPtrs[3],
     outPtrs[4], outPtrs[5], outPtrs[6], outPtrs[7],
-    0, 0, 0, 0,
-    false
+    0, 0, 0, 0, // left_4,right_4,left_5,right_5 (no usados, modelo de 4 fuentes)
+    0, 0, // left_6,right_6 (no usados)
+    false, // batch_mode_param
+    useExternalRef, refMean, refStd
   );
 
   onProgress?.(0.95, "copiando resultados");
