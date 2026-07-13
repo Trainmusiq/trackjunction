@@ -1,9 +1,9 @@
 # trackjunction — Especificación del proyecto
 
 **Ecosistema:** trainmusiq (ver `trainmusiq/trainmusiq` — roadmap.md, manual-continuidad.md, brief-diseno.md) · **Herramienta:** trackjunction — el empalme que divide la canción en vías: separación de stems + estudio (mute/solo, tempo, loops)
-**Versión:** 0.4 · 11 de julio de 2026 (sesión de depuración del no-determinismo — parcialmente resuelto, ver §11.6-§11.7)
+**Versión:** 0.5 · 12 de julio de 2026 (sesión de verificación del troceo — decisión final: servidor-primero, cliente en beta ≤34s, ver §11.9)
 **Autor:** Juanma (Punta Arenas) con Claude
-**Estado:** construcción v2.0 sigue **bloqueada para el troceo de canciones**, pero con avance real. El no-determinismo entre llamadas repetidas (§11.4) está **resuelto**: es seguro con el patrón de producción (Worker nuevo por franja, nunca reutilizado) — warm start descartado, sin cambios de arquitectura necesarios. La causa de la discrepancia referencia-vs-trozado es OTRA, ahora caracterizada con precisión: el ventaneo interno del motor depende de la duración total del buffer, no solo del contenido local (§11.6) — sin arreglar todavía, con 3 opciones costeadas en §11.7 para decisión del fundador. Cascada de rendimiento (§10) revisada con benchmark real de WebGPU. Selector de calidad por modelo documentado como propuesta (§10.10, no implementado).
+**Estado:** construcción v2.0 **bloqueada para canciones completas en el cliente — decisión ratificada, sin más ciclos de depuración pendientes**. El no-determinismo entre llamadas repetidas está resuelto (§11.4/§11.6, patrón de producción ya seguro). El troceo con descarte de bordes (§11.8, técnica estándar de ingeniería, ~50dB mejor que el crossfade probado antes) tampoco alcanza el umbral de -80dB — `drums` queda sistemáticamente lejos en dos pruebas independientes. **Decisión final (§11.9): tier servidor como única vía de calidad garantizada para canciones completas; tier cliente en beta, limitado a clips ≤34s sin trocear, declarado con honestidad en la UI.** La próxima sesión puede construir el MVP del pipeline v2.0 sobre esta decisión. Cascada de rendimiento (§10) revisada con benchmark real de WebGPU. Selector de calidad por modelo documentado como propuesta (§10.10, no implementado).
 
 **Nombre:** "trackjunction" — el empalme ferroviario que divide la canción en vías (stems); "track" es pista de audio Y vía férrea, doble sentido intencional.
 
@@ -424,12 +424,41 @@ Test: instancia fresca, una sola llamada sobre un buffer de **20s** (10s reales 
 
 **No se encontró el problema reportado en issues públicos de `sevagh/demucs.cpp`** (búsqueda dirigida, sin resultados relevantes) — parece no documentado por el autor upstream, consistente con que el motor fue diseñado asumiendo "se te pasa la canción completa", no troceo externo.
 
-### 11.7 Decisión y estado (actualizado tras la sesión de depuración)
+### 11.7 Intento previo (superado): overlap con crossfade lineal
 
-- ✓ **Resuelto: no-determinismo por reutilización de instancia** (§11.4). El patrón de producción ya planeado (Worker nuevo por franja, sin reutilizar) es seguro. Ningún cambio de código necesario — es una confirmación, no un fix.
-- ✗ **Principio A sigue sin cumplirse** para el troceo de canciones (secuencial o paralelo) — causa raíz ahora entendida con precisión (§11.6: sensibilidad del ventaneo interno a la duración total del buffer), pero no arreglada.
-- **Opciones para decidir, con costo estimado honesto:**
-  1. **Parchear el C++ para anclar la grilla de ventaneo en tiempo absoluto** (que `segment_inference` sepa "este buffer arranca en el segundo T de una canción de duración D", no asuma siempre T=0): la corrección más limpia, pero requiere entender y modificar la lógica de `symmetric_zero_padding` + el bucle de segmentos en `model_apply.cpp` para que el padding de cola sea consistente sin importar dónde se corte externamente — **estimado 1-2 sesiones dedicadas de C++**, sin garantía de que sea la única fuente residual de diferencia.
-  2. **Overlap externo mucho más grande** (varios múltiplos del segmento interno de 7.8s, no los 4-6s usados hasta ahora) para que la región de contexto "sucio" quede fuera de la zona escrita/confiable de cada Worker: más barato de intentar (cambios solo en `engine/segment-plan.mjs`), pero **no hay garantía de que converja** — el test de esta sesión (buffer de 20s vs 10s, mucho contexto compartido) ya mostró diferencias no despreciables, así que el overlap necesario podría ser impracticalmente grande (acercándose a "simplemente no trocear"). Costo: **1 sesión para probar, resultado incierto**.
-  3. **Adelantar el tier servidor (§7) como única vía de calidad garantizada** para canciones completas, dejando el tier cliente limitado a clips cortos (<35s, sin trocear, sin este problema) hasta que 1 o 2 se resuelvan — o indefinidamente si no se justifica el esfuerzo. Costo: el ya proyectado en §7 (2-4 sesiones + infraestructura), **sin trabajo adicional de depuración**. Es la opción de menor riesgo técnico.
-- **No se tocó `engine/adaptive-workers.mjs`, `segment-plan.mjs` ni `merge-segments.mjs`** — el diseño de orquestación sigue siendo correcto SI se resuelve 1 o 2; no se descartan, quedan listos.
+*(Esta sección listaba originalmente 3 opciones a decidir — parchear el ventaneo en C++, agrandar el overlap con crossfade, o adelantar el tier servidor — ver historial de git para el texto exacto. Quedaron superadas por la sesión de verificación siguiente: la opción de agrandar el overlap se probó, pero con crossfade lineal seguía sin converger; §11.8 prueba una variante distinta — descarte de bordes en vez de crossfade — con mejora real pero tampoco resuelve el problema por completo.)* Ver §11.9 para la decisión final.
+
+### 11.8 Sesión de verificación: troceo con descarte de bordes (12 jul 2026)
+
+**Hipótesis a probar:** el diagnóstico de §11.6 (10s solo vs. primeros 10s de una llamada de 20s) usaba SIEMPRE el crossfade — nunca se probó la técnica estándar de ingeniería de descartar por completo la región cercana al borde (en vez de mezclarla) y conservar solo el interior, con suficiente margen para que el campo receptivo del ventaneo interno no lo alcance.
+
+**Diseño:** cada chunk procesa un buffer ancho (`readStart..readEnd`, igual que antes) pero el merge (`engine/merge-segments-discard.mjs`, nuevo) **descarta por completo** el margen de cada lado (`fadeInSamples`/`fadeOutSamples`) en vez de mezclarlo — solo copia el interior (`writeStart..writeEnd`) sin crossfade. Los bordes verdaderos de la canción (primer/último chunk) no descartan nada. Probado con descarte de 1 stride interno (7.8s) y 2 strides (11.7s).
+
+**Test 1 — referencia real:** clip de 33s procesado entero (una pieza, cabe en memoria) vs. 3 chunks con descarte:
+
+| Descarte | Peor caso overall | Peor caso en costuras | Nota |
+|---|---|---|---|
+| 7.8s (1 stride) | -53.8dB | -54.4dB | Enorme mejora vs. el crossfade de §11.3 (-0.7dB) |
+| 11.7s (2 strides) | -52.5dB | -53.9dB | Casi sin cambio — más descarte no ayuda mucho más |
+
+**Diagnóstico por stem (descarte 11.7s):** `vocals` -87.4dB (**pasa** el umbral), `other` -77.8 a -79.6dB (rozando el umbral), `bass` -71 a -73dB (cerca), **`drums` -52.5 a -54.2dB (lejos)** — el stem percusivo/transiente es sistemáticamente el peor, consistente con que los transitorios son la clase de señal más sensible a cualquier imperfección de ventaneo/blend (una modulación de amplitud sutil en el borde es audible en un transiente y casi inaudible en un tono sostenido).
+
+**Diagnóstico por zona (con descarte 11.7s):** uno de los 3 chunks del test, por casualidad de la grilla, terminó leyendo el buffer COMPLETO de 33s (idéntico en longitud y contenido al de la referencia) — su región conservada dio **`-Infinity`dB, bit a bit perfecto**, confirmando que cuando el buffer coincide exactamente con el de la referencia, el resultado es idéntico. Los otros 2 chunks (más angostos que la referencia, aunque con descarte generoso) siguieron mostrando diferencia de decenas de dB en zonas lejos de cualquier borde propio. **Esto revela que el problema no es solo "distancia al borde" — es que la duración TOTAL del buffer altera el resultado incluso en su interior**, algo que ningún margen de descarte externo puede compensar del todo mientras el chunk sea más corto que lo que sea que se esté comparando.
+
+**Test 2 — consistencia sin referencia (más relevante para canciones reales):** clip de 60s (más largo que el límite de OOM, sin referencia posible) troceado con DOS grillas independientes — esquema A (6 chunks) y esquema B (7 chunks), descarte 11.7s en ambos, comparados directamente entre sí (no contra una referencia):
+
+| Stem | Diferencia RMS relativa (A vs B) |
+|---|---|
+| vocals | -84.9dB (pasa) |
+| other | -77.5dB (cerca) |
+| bass | -71.7dB (cerca) |
+| drums | -49.1dB (lejos) |
+
+**Mismo patrón exacto que el Test 1**, con dos grillas de troceo completamente independientes sobre 60s de audio real — confirma que el hallazgo no es un artefacto de comparar contra una referencia de longitud "equivocada" (33s): es reproducible y consistente.
+
+### 11.9 Decisión final (ratificar)
+
+- **Veredicto: NO PASA el criterio de -80dB en toda la señal.** El descarte de bordes es una mejora real y sustancial (~50dB mejor que el crossfade, 3 de 4 stems cerca o dentro del umbral) pero `drums` queda sistemáticamente lejos, en dos pruebas independientes (contra referencia Y de consistencia cruzada).
+- **Por lo acordado con el fundador: queda decidida la opción 3 sin más ciclos de depuración.** El tier servidor (§7) es la vía de calidad garantizada para canciones completas; el tier cliente queda **en beta, limitado a clips ≤34s procesados de una sola pieza (sin trocear)** — la limitación se declara con honestidad en la UI cuando se construya (regla dura #4, progreso/límites honestos), no se esconde.
+- **El código de esta sesión queda vendorizado y listo, no descartado:** `engine/merge-segments-discard.mjs` (nuevo) + `engine/segment-plan.mjs` (reutilizado sin cambios) son la base correcta si en el futuro se decide invertir en arreglar el motor C++ (opción 1 de §11.7, todavía la más prometedora de las vías de arreglo real — el hallazgo de "buffer completo = resultado perfecto" de §11.8 la refuerza: anclar el ventaneo a tiempo absoluto atacaría exactamente la causa identificada).
+- **No se construyó el MVP en esta sesión**, como se acordó — la próxima sesión, con esta decisión ratificada, puede construir la UI del pipeline v2.0 asumiendo servidor-primero + cliente en beta limitado, sin más tiempo en la separación por franjas.
