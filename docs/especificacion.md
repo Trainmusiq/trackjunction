@@ -462,3 +462,27 @@ Test: instancia fresca, una sola llamada sobre un buffer de **20s** (10s reales 
 - **Por lo acordado con el fundador: queda decidida la opción 3 sin más ciclos de depuración.** El tier servidor (§7) es la vía de calidad garantizada para canciones completas; el tier cliente queda **en beta, limitado a clips ≤34s procesados de una sola pieza (sin trocear)** — la limitación se declara con honestidad en la UI cuando se construya (regla dura #4, progreso/límites honestos), no se esconde.
 - **El código de esta sesión queda vendorizado y listo, no descartado:** `engine/merge-segments-discard.mjs` (nuevo) + `engine/segment-plan.mjs` (reutilizado sin cambios) son la base correcta si en el futuro se decide invertir en arreglar el motor C++ (opción 1 de §11.7, todavía la más prometedora de las vías de arreglo real — el hallazgo de "buffer completo = resultado perfecto" de §11.8 la refuerza: anclar el ventaneo a tiempo absoluto atacaría exactamente la causa identificada).
 - **No se construyó el MVP en esta sesión**, como se acordó — la próxima sesión, con esta decisión ratificada, puede construir la UI del pipeline v2.0 asumiendo servidor-primero + cliente en beta limitado, sin más tiempo en la separación por franjas.
+
+### 11.10 Fase 0 de la sesión MVP (13 jul 2026): karaoke pasa, pares A/B listos para oído
+
+**(a) Karaoke/quitar-voz en canciones COMPLETAS trozadas: PASA -80dB, matemáticamente garantizado por construcción.**
+
+Hipótesis: como `instrumental = mezcla original − stem de voz` (resta directa sobre la mezcla original, sin reprocesar), y la mezcla es idéntica en ambos casos (no se trocea, es el archivo tal cual), la diferencia entre el instrumental de referencia y el instrumental trozado es EXACTAMENTE la diferencia entre sus stems de voz — ni más ni menos. Como `vocals` ya pasaba el umbral (§11.8: -84.9 a -87.4dB), el instrumental hereda esa misma calidad automáticamente.
+
+Verificado con los stems ya calculados en §11.8 (sin recomputar el motor — solo aritmética sobre los `.f32` guardados):
+
+| Test | Pico dif | RMS relativo | Umbral -80dB |
+|---|---|---|---|
+| Referencia 33s vs troceo-descarte (11.7s) | -95.2dBFS | **-85.6dB** | ✓ CUMPLE |
+| Consistencia 60s, grilla A (N=6) vs grilla B (N=7) | -86.7dBFS | **-82.0dB** | ✓ CUMPLE |
+
+**Conclusión: karaoke/quitar-voz de canciones completas (con troceo-descarte + Workers paralelos) puede ofrecerse en el tier gratis con confianza — no necesita esperar la ratificación de oído de (b), que es específica del modo "4 stems completos".**
+
+**(b) Audibilidad del troceo-descarte en canción completa: pares A/B exportados, pendientes de juicio de oído.**
+
+Se exportaron 11 archivos WAV reales (44.1kHz/16-bit) a partir de los stems ya calculados del clip de referencia de 33s (§11.8), sin recomputar el motor:
+- `{drums,bass,other,vocals}_A_referencia.wav` y `_B_troceado.wav` (8 archivos, A=sin trocear, B=troceo-descarte 11.7s) — foco en `drums` por ser el peor caso medido (-49 a -54dB).
+- `mix_A_referencia.wav` / `mix_B_troceado.wav` (mezcla re-sumada de los 4 stems, para juzgar en contexto musical, no solo el stem aislado).
+- `drums_residuo_amplificado_x300.wav` (diferencia A−B de drums, amplificada ×300 / +49.5dB para hacer audible una diferencia que normalmente está ~50dB por debajo de la señal — **no es lo que se escucha en la mezcla real**, es el "error" aislado para juzgar su carácter; costuras reales en 11.0s y 22.0s, ahí es donde más probablemente se note algo si es audible).
+
+**Estado: exportado, no escuchado todavía — pendiente de ratificación del fundador.** Ubicación (temporal, no commiteado — mismo tratamiento que `test/private/` de centrail, audio derivado de material con copyright del fundador): carpeta de scratchpad de la sesión, abierta en Finder al terminar de generarse. **Si el fundador confirma que es inaudible en la mezcla real (`mix_B_troceado.wav` comparado con `mix_A_referencia.wav`), el modo "canción completa, 4 stems" queda habilitado en el tier gratis con la etiqueta de calidad medida (-49 a -54dB peor caso, honesto); si no, el modo queda deshabilitado (solo Fragmento y Karaoke) hasta una futura sesión que arregle el motor.** Esta sesión continuó con el diseño/construcción de la UI en paralelo (soporta ambos desenlaces, con el modo "canción completa" detrás de una bandera explícita, apagada por defecto hasta la ratificación) — ver §12 para el estado del MVP.
