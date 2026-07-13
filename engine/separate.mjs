@@ -13,10 +13,14 @@
 // clásico. En un Worker de producción se carga con `importScripts()` y se usa
 // `self.libdemucs`; en Node (para testear este wrapper) se usa `createRequire`.
 
-import NodeModule from "node:module";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+// OJO: nada de imports estáticos de módulos "node:*" a nivel de archivo —
+// un import ES se resuelve siempre (aunque el código que lo usa esté detrás
+// de un `if`), y esto rompe en el navegador (que no puede resolver "node:fs"
+// etc.) incluso si esa rama nunca se ejecuta ahí. Hallazgo de esta sesión:
+// este archivo se probó extensivamente en Node pero NUNCA en un navegador
+// real hasta la sesión del MVP — ese bug pasó desapercibido hasta entonces.
+// Los módulos de Node se cargan con import() DINÁMICO, solo dentro de la
+// rama que corre en Node.
 
 let modulePromise = null;
 let weightsPromise = null;
@@ -27,7 +31,10 @@ let weightsPromise = null;
 // CommonJS. Se fuerza la interpretación CJS compilando el archivo manualmente
 // con la API interna de Module — solo importa en Node (testing); en un Worker
 // de navegador esto no aplica (importScripts es siempre clásico).
-function requireAsCJS(absPath) {
+async function requireAsCJS(absPath) {
+  const [{ default: NodeModule }, { default: fs }, { default: path }] = await Promise.all([
+    import("node:module"), import("node:fs"), import("node:path"),
+  ]);
   const m = new NodeModule(absPath, null);
   m.filename = absPath;
   m.paths = NodeModule._nodeModulePaths(path.dirname(absPath));
@@ -35,12 +42,13 @@ function requireAsCJS(absPath) {
   return m.exports;
 }
 
-function loadLibdemucsFactory() {
+async function loadLibdemucsFactory() {
   const isNode = typeof process !== "undefined" && process.versions?.node;
   if (isNode) {
     // El módulo asume contexto Worker para su logging (EM_JS -> postMessage);
     // en Node (solo para test/*.mjs, nunca en producción) se stubea como no-op.
     if (typeof globalThis.postMessage !== "function") globalThis.postMessage = () => {};
+    const { fileURLToPath } = await import("node:url");
     const demucsJsPath = fileURLToPath(new URL("../vendor/demucs-cpp-wasm/demucs.js", import.meta.url));
     return requireAsCJS(demucsJsPath);
   }
@@ -55,9 +63,23 @@ function loadLibdemucsFactory() {
   );
 }
 
+// Gotcha real (encontrado probando en navegador, no solo en Node): dentro de
+// un Worker, `self.location.href` apunta al script CON EL QUE SE CREÓ el
+// Worker (ej. chunk.worker.mjs), no al de demucs.js — aunque demucs.js se
+// cargue después vía importScripts(). demucs.js usa `self.location.href`
+// para calcular dónde buscar su .wasm (`locateFile`), así que sin ayuda
+// buscaría el .wasm en la carpeta del Worker, no en vendor/demucs-cpp-wasm/
+// — un 404 silencioso que rompe con "expected magic word" al intentar
+// compilar HTML de error como si fuera WASM. Fix: pasar `locateFile`
+// explícito, anclado a import.meta.url de ESTE archivo (que sí es correcto
+// sin importar qué Worker lo cargue).
+const VENDOR_DIR = new URL("../vendor/demucs-cpp-wasm/", import.meta.url).href;
+
 function loadModule() {
   if (!modulePromise) {
-    modulePromise = Promise.resolve().then(() => loadLibdemucsFactory()()); // libdemucs() es async, devuelve el Module
+    modulePromise = loadLibdemucsFactory().then((factory) => factory({
+      locateFile: (path) => VENDOR_DIR + path,
+    }));
   }
   return modulePromise;
 }

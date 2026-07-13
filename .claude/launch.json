@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "trackjunction-dev",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["docs/dev-server.mjs"],
+      "port": 8092
+    }
+  ]
+}

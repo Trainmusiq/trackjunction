@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>trackjunction — separación de stems, honesta sobre su propia calidad</title>
+<link rel="stylesheet" href="fonts/fonts.css?v=0.5.0">
+<style>
+  :root {
+    --bg: #16181d;
+    --panel: #1e2128;
+    --panel-2: #24272f;
+    --line: #33373f;
+    --ink: #e9e5d9;
+    --ink-dim: #9a968c;
+    --amber: #f2a33c;
+    --cyan: #5fd4c4;
+    --red: #e06a5a;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: "Archivo", -apple-system, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    background: var(--bg); color: var(--ink); font-family: var(--sans);
+    min-height: 100vh; padding: 28px 16px 64px;
+    background-image: radial-gradient(ellipse 80% 50% at 50% -10%, #21242c 0%, transparent 60%);
+  }
+  .rig { max-width: 760px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; justify-content: space-between; border-bottom: 1px solid var(--line); padding-bottom: 14px; margin-bottom: 22px; }
+  h1 { font-size: 20px; font-weight: 600; letter-spacing: 0.04em; }
+  h1 .num { color: var(--amber); font-family: var(--mono); font-weight: 500; }
+  .plate { font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim); letter-spacing: 0.12em; text-transform: uppercase; text-align: right; }
+  .plate a { color: var(--cyan); text-decoration: none; }
+
+  .drop {
+    border: 1.5px dashed var(--line); border-radius: 10px; background: var(--panel);
+    padding: 42px 20px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s;
+  }
+  .drop:hover, .drop.dragover { border-color: var(--cyan); background: var(--panel-2); }
+  .drop:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+  .drop .big { font-size: 15.5px; margin-bottom: 6px; }
+  .drop .fmt { font-family: var(--mono); font-size: 11px; color: var(--ink-dim); letter-spacing: 0.06em; }
+  input[type=file] { display: none; }
+
+  .hidden { display: none !important; }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-top: 16px; }
+  .card h2 { font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-dim); margin-bottom: 12px; }
+
+  .modes { display: flex; flex-direction: column; gap: 10px; }
+  .mode-btn {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    text-align: left; width: 100%; padding: 14px 16px; border-radius: 10px;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--ink); cursor: pointer;
+    font-family: var(--sans); transition: border-color .15s;
+  }
+  .mode-btn:hover:not(:disabled) { border-color: var(--cyan); }
+  .mode-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .mode-btn .title { font-weight: 600; font-size: 14px; }
+  .mode-btn .quality { font-family: var(--mono); font-size: 11px; color: var(--cyan); margin-top: 3px; }
+  .mode-btn .why { font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim); margin-top: 2px; }
+  .mode-btn .arrow { font-family: var(--mono); color: var(--ink-dim); }
+
+  .waveform-wrap { margin-top: 10px; }
+  canvas#waveform { width: 100%; height: 90px; display: block; background: var(--panel-2); border-radius: 8px; cursor: crosshair; }
+  .selection-info { font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); margin-top: 8px; display: flex; justify-content: space-between; }
+  .selection-info .warn { color: var(--red); }
+  button.primary {
+    font-family: var(--mono); font-size: 13px; font-weight: 600; letter-spacing: 0.05em;
+    background: var(--panel-2); border: 1px solid var(--cyan); color: var(--cyan);
+    padding: 10px 18px; border-radius: 8px; cursor: pointer; margin-top: 10px;
+  }
+  button.primary:hover { background: rgba(95,212,196,0.1); }
+  button.primary:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.ghost {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.04em;
+    background: none; border: 1px solid var(--line); color: var(--ink-dim);
+    padding: 6px 12px; border-radius: 6px; cursor: pointer;
+  }
+  button.ghost:hover { border-color: var(--ink-dim); color: var(--ink); }
+
+  /* Progreso honesto — velo modal, etapa + % real, nunca spinner */
+  .progress { display: none; position: fixed; inset: 0; z-index: 1000; align-items: center; justify-content: center; padding: 20px; background: rgba(22,24,29,0.9); backdrop-filter: blur(2px); }
+  .progress.on { display: flex; }
+  .progress-box { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 28px 26px; max-width: 380px; width: 100%; text-align: center; }
+  .progress-pct { font-family: var(--mono); font-size: clamp(32px, 8vw, 44px); font-weight: 500; }
+  .pbar { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; margin-top: 16px; }
+  .pbar > div { height: 100%; width: 0%; background: var(--amber); transition: width .15s linear; }
+  .progress-stage { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); margin-top: 14px; }
+  .progress-resource { font-family: var(--mono); font-size: 11px; color: var(--cyan); margin-top: 6px; }
+
+  .stem-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .stem-row:last-child { border-bottom: none; }
+  .stem-name { flex: 1; font-size: 13.5px; text-transform: capitalize; }
+  .stem-quality { font-family: var(--mono); font-size: 10px; color: var(--ink-dim); }
+  .stem-btn { font-family: var(--mono); font-size: 11px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); color: var(--ink-dim); cursor: pointer; }
+  .stem-btn.active-mute { border-color: var(--red); color: var(--red); }
+  .stem-btn.active-solo { border-color: var(--amber); color: var(--amber); }
+  .dl-link { font-family: var(--mono); font-size: 11px; color: var(--cyan); text-decoration: none; padding: 5px 8px; }
+
+  .demand-box { text-align: center; }
+  .demand-box p { font-size: 13px; color: var(--ink-dim); margin-top: 8px; line-height: 1.5; }
+  .demand-count { font-family: var(--mono); font-size: 11px; color: var(--ink-dim); margin-top: 10px; }
+
+  .newsletter { display: flex; gap: 8px; flex-wrap: wrap; }
+  .newsletter input[type=email] {
+    flex: 1; min-width: 180px; font-family: var(--mono); font-size: 13px;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--ink);
+    padding: 9px 12px; border-radius: 8px;
+  }
+  .newsletter-note { font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim); margin-top: 8px; }
+
+  footer { margin-top: 30px; padding-top: 16px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+  footer a { color: var(--ink-dim); font-family: var(--mono); font-size: 11px; text-decoration: none; }
+  footer a:hover { color: var(--cyan); }
+  .lang-toggle { display: flex; gap: 6px; }
+  .lang-toggle button { font-family: var(--mono); font-size: 11px; background: none; border: 1px solid var(--line); color: var(--ink-dim); padding: 3px 8px; border-radius: 5px; cursor: pointer; }
+  .lang-toggle button.active { color: var(--amber); border-color: var(--amber); }
+</style>
+</head>
+<body>
+<div class="rig">
+  <header>
+    <h1><span class="num">01</span> trackjunction</h1>
+    <div class="plate" data-i18n="tagline">separación de stems, con su calidad medida</div>
+  </header>
+
+  <div class="drop" id="drop" tabindex="0" role="button" aria-label="Cargar archivo de audio">
+    <div class="big" data-i18n="dropBig">Soltá una canción acá, o hacé clic para elegir</div>
+    <div class="fmt">WAV · FLAC · MP3 · OGG</div>
+    <input type="file" id="fileInput" accept="audio/*">
+  </div>
+
+  <div class="card hidden" id="modeCard">
+    <h2 data-i18n="chooseMode">Elegí cómo separarla</h2>
+    <div class="modes" id="modes"></div>
+
+    <div class="waveform-wrap hidden" id="waveformWrap">
+      <canvas id="waveform" width="1200" height="90"></canvas>
+      <div class="selection-info">
+        <span id="selInfo">0.0s – 0.0s (0.0s)</span>
+        <span id="selWarn" class="warn hidden" data-i18n="selTooLong">máximo 34s — bit-perfecto solo hasta ahí</span>
+      </div>
+      <button class="primary" id="useFragmentBtn" data-i18n="useFragment">Separar este fragmento</button>
+    </div>
+  </div>
+
+  <div class="progress" id="progress">
+    <div class="progress-box">
+      <div class="progress-pct" id="progressPct">0%</div>
+      <div class="pbar"><div id="progressBar"></div></div>
+      <div class="progress-stage" id="progressStage">—</div>
+      <div class="progress-resource" id="progressResource"></div>
+    </div>
+  </div>
+
+  <div class="card hidden" id="resultsCard">
+    <h2><span data-i18n="results">Resultado —</span> <span id="resultQuality"></span></h2>
+    <div id="stemRows"></div>
+    <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
+      <button class="ghost" id="playAllBtn" data-i18n="playAll">▶ reproducir</button>
+      <button class="ghost" id="loopBtn" data-i18n="loop">loop: off</button>
+    </div>
+  </div>
+
+  <div class="card demand-box hidden" id="demandCard">
+    <button class="primary" id="demandBtn" data-i18n="demandBtn">Canción completa bit-perfecta en segundos — próximamente (servidor)</button>
+    <p id="demandNote"></p>
+    <div class="demand-count" id="demandCount"></div>
+  </div>
+
+  <div class="card">
+    <h2 data-i18n="newsletterTitle">¿Querés saber cuándo llegue la próxima estación?</h2>
+    <form class="newsletter" id="newsletterForm">
+      <input type="email" id="newsletterEmail" placeholder="tu@correo.com" required>
+      <button class="primary" type="submit" data-i18n="newsletterBtn" style="margin-top:0;">Avisame</button>
+    </form>
+    <div class="newsletter-note" id="newsletterNote" data-i18n="newsletterNote">Sin spam, doble confirmación, podés borrarte cuando quieras.</div>
+  </div>
+
+  <footer>
+    <div>
+      <a href="https://ko-fi.com/trainmusiq" target="_blank" rel="noopener">Ko-fi</a>
+      &nbsp;·&nbsp;
+      <a href="https://github.com/Trainmusiq/trackjunction" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <div class="lang-toggle" id="langToggle">
+      <button data-lang="es" class="active">ES</button>
+      <button data-lang="en">EN</button>
+    </div>
+  </footer>
+</div>
+
+<script type="module" src="app.mjs?v=0.5.0"></script>
+</body>
+</html>
