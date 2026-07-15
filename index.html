@@ -130,13 +130,13 @@
   </header>
 
   <div class="drop" id="drop" tabindex="0" role="button" aria-label="Cargar archivo de audio">
-    <div class="big" data-i18n="dropBig">Soltá una canción acá, o hacé clic para elegir</div>
+    <div class="big" data-i18n="dropBig">Suelta una canción aquí, o haz clic para elegir</div>
     <div class="fmt">WAV · FLAC · MP3 · OGG</div>
     <input type="file" id="fileInput" accept="audio/*">
   </div>
 
   <div class="card hidden" id="modeCard">
-    <h2 data-i18n="chooseMode">Elegí cómo separarla</h2>
+    <h2 data-i18n="chooseMode">Elige cómo separarla</h2>
     <div class="modes" id="modes"></div>
 
     <div class="waveform-wrap hidden" id="waveformWrap">
@@ -174,13 +174,13 @@
   </div>
 
   <div class="card">
-    <h2 data-i18n="newsletterTitle">¿Querés saber cuándo llegue la próxima estación?</h2>
+    <h2 data-i18n="newsletterTitle">Te avisamos cuando esté cerca la próxima estación.</h2>
     <form class="newsletter" id="newsletterForm" action="https://buttondown.com/api/emails/embed-subscribe/trainmusiq" method="post" target="_blank">
       <input type="email" id="newsletterEmail" name="email" placeholder="tu@correo.com" required>
       <input type="hidden" name="embed" value="1">
-      <button class="primary" type="submit" data-i18n="newsletterBtn" style="margin-top:0;">Avisame</button>
+      <button class="primary" type="submit" data-i18n="newsletterBtn" style="margin-top:0;">Avísame</button>
     </form>
-    <div class="newsletter-note" id="newsletterNote" data-i18n="newsletterNote">Se abre en una pestaña nueva de Buttondown — sin spam, doble confirmación, podés borrarte cuando quieras.</div>
+    <div class="newsletter-note" id="newsletterNote" data-i18n="newsletterNote">Se abrirá Buttondown y te llegará un correo — confirma ahí tu inscripción. Sin spam; puedes borrarte cuando quieras.</div>
   </div>
 
   <footer>
@@ -193,6 +193,6 @@
   </footer>
 </div>
 
-<script type="module" src="app.mjs?v=0.7.0"></script>
+<script type="module" src="app.mjs?v=0.7.1"></script>
 </body>
 </html>

@@ -16,7 +16,7 @@ En vez de ignorar el problema o esconderlo, lo medimos: comparamos, con evidenci
 
 ## Qué hace (los 3 modos)
 
-1. **Fragmento** (elegís hasta 34 segundos sobre la forma de onda): el motor procesa el fragmento entero de una sola pasada, sin trocear. **Bit-perfecto garantizado** — no hay nada que medir, porque no hay ningún troceo de por medio.
+1. **Fragmento** (eliges hasta 34 segundos sobre la forma de onda): el motor procesa el fragmento entero de una sola pasada, sin trocear. **Bit-perfecto garantizado** — no hay nada que medir, porque no hay ningún troceo de por medio.
 2. **Canción completa** (4 stems): troceo con descarte de bordes + Workers en paralelo. **Calidad alta, medida y ratificada de oído.** La diferencia medida contra una separación de referencia sin trocear es de ~−50dB (peor caso, incluso con material hostil, batería activa justo en las costuras) — matemáticamente por debajo del umbral de -80dB que sí cumple karaoke, pero confirmado imperceptible en escucha dirigida y localizada sobre esas costuras.
 3. **Karaoke / quitar voz** (canción completa): la mezcla original menos el stem de voz. Como la mezcla nunca se toca, la calidad de este modo depende solo de qué tan bien sale el stem de voz — **certificado: −82 a −87dB**, cumple el umbral de -80dB matemáticamente, sin necesitar ratificación de oído. Entrega dos salidas: instrumental y voz aislada.
 
@@ -30,7 +30,7 @@ Cada stem se descarga en WAV o FLAC. Mezclador con mute/solo por pista y reprodu
 
 Un servidor GPU podría separar canciones completas de forma bit-perfecta en segundos (sin el límite de memoria del navegador). No lo construimos todavía — antes queremos saber si hay demanda real, no suponerla. Por eso hay un botón "canción completa bit-perfecta en segundos — próximamente" que cuenta interés real (sin cookies, sin identificar a nadie). Si el interés sostenido lo justifica, el tier servidor se construye — con un tope de uso justo y sin publicidad de terceros, nunca.
 
-Si te interesa que llegue, dejá tu correo en la cajita de abajo — sin spam, doble confirmación, te borrás cuando quieras.
+Si te interesa que llegue, deja tu correo en la cajita de abajo — sin spam, doble confirmación, te borras cuando quieras.
 
 ## Motor y arquitectura
 
@@ -44,7 +44,7 @@ Especificación técnica completa, con la metodología y los números reales de 
 
 ## Apoya el proyecto
 
-trackjunction es gratis y siempre lo será para lo que corre en tu equipo. Si te sirvió, podés invitarnos un café en [Ko-fi](https://ko-fi.com/trainmusiq) ☕
+trackjunction es gratis y siempre lo será para lo que corre en tu equipo. Si te sirvió, puedes invitarnos un café en [Ko-fi](https://ko-fi.com/trainmusiq) ☕
 
 ## Licencia
 
