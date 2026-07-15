@@ -1,9 +1,9 @@
 # trackjunction — Especificación del proyecto
 
 **Ecosistema:** trainmusiq (ver `trainmusiq/trainmusiq` — roadmap.md, manual-continuidad.md, brief-diseno.md) · **Herramienta:** trackjunction — el empalme que divide la canción en vías: separación de stems + estudio (mute/solo, tempo, loops)
-**Versión:** 0.6 · 14 de julio de 2026 (publicación del beta v2.0 — ver §12)
+**Versión:** 0.7 · 14 de julio de 2026 (los 3 modos habilitados, beta v2.0 completo — ver §12)
 **Autor:** Juanma (Punta Arenas) con Claude
-**Estado:** **beta v2.0 publicado en https://trainmusiq.github.io/trackjunction/** con Fragmento (bit-perfecto) y Karaoke (certificado -82 a -87dB) habilitados. Canción completa (4 stems) queda **gateada** — el troceo con descarte de bordes (§11.8, ~50dB mejor que el crossfade probado antes) no alcanza el umbral de -80dB en ningún test, ni siquiera con material hostil (batería activa en las costuras, §11.11: -49 a -54dB peor caso) — pendiente de ratificación auditiva del fundador antes de habilitarse. El no-determinismo entre llamadas repetidas está resuelto (§11.4/§11.6, patrón de producción ya seguro). Ver §12 para el checklist completo del MVP.
+**Estado:** **beta v2.0 publicado en https://trainmusiq.github.io/trackjunction/ con los 3 modos habilitados.** Fragmento (bit-perfecto), Karaoke (certificado -82 a -87dB, umbral -80dB cumplido matemáticamente) y **Canción completa (4 stems, ratificada de oído — §11.11)**: el troceo con descarte de bordes no llega al umbral de -80dB (~-50dB peor caso, incluso con material hostil, batería activa en las costuras), pero el fundador confirmó que es imperceptible en escucha dirigida y localizada sobre las costuras exactas — la app lo declara con honestidad ("calidad alta, medida, ratificada" en vez de "certificado") en vez de forzar un número que no cumple el umbral pero sí la experiencia real. El no-determinismo entre llamadas repetidas está resuelto (§11.4/§11.6, patrón de producción ya seguro). Ver §12 para el checklist completo del MVP.
 
 **Nombre:** "trackjunction" — el empalme ferroviario que divide la canción en vías (stems); "track" es pista de audio Y vía férrea, doble sentido intencional.
 
@@ -504,27 +504,27 @@ Se exportaron 11 archivos WAV reales (44.1kHz/16-bit) a partir de los stems ya c
 
 **Pares A/B exportados para juicio de oído** (mismo tratamiento que §11.10-b: scratchpad de la sesión, NUNCA commiteado, `test/private/` de centrail queda excluido por `.gitignore`): `{drums,vocals,bass,other}_A_referencia.wav` / `_B_troceado.wav`, `mix_A_referencia.wav` / `mix_B_troceado.wav`, `drums_residuo_amplificado_x300.wav` y `vocals_residuo_amplificado_x300.wav` (ambos con foco, ya que vocals empató/superó a drums como peor caso en este material). **Costuras exactas para escucha dirigida: 11.0s y 22.0s** — ahí es donde escuchar primero en `mix_B_troceado.wav` comparado con `mix_A_referencia.wav`, y en los residuos amplificados.
 
-**Estado: exportado, pendiente de ratificación del fundador (mismo criterio que §11.10-b, ahora con el caso hostil correcto).** Este veredicto de oído — sobre material que sí somete el troceo a su peor escenario real — es el que finalmente enciende o descarta el modo "canción completa" del tier gratis.
+**Estado: RATIFICADO por el fundador (14 jul 2026).** Escucha dirigida y localizada sobre las costuras exactas (11.0s/22.0s) en los stems de referencia vs troceados: imperceptible. En los residuos amplificados ×300 a volumen máximo — donde SÍ se escucha algo, por diseño, ya que están hechos para hacer audible lo que normalmente no lo es — el fundador reporta clics de costura exactamente en 11s/22s y **silencio total en el tramo central (11-22s) en todos los stems**, consistente con el hallazgo de §11.8 de que el chunk central lee el buffer completo y es bit-perfecto (la métrica ahí da -Infinity porque no hay diferencia que medir). Este veredicto enciende el modo "canción completa" en el tier gratis — ver §12.
 
 ---
 
-## 12. Estado del MVP v2.0 — beta publicado (14 jul 2026)
+## 12. Estado del MVP v2.0 — beta publicado, los 3 modos habilitados (14 jul 2026)
 
 **URL en vivo:** https://trainmusiq.github.io/trackjunction/ (GitHub Pages, repo público, branch `main`, sin build step).
 
 ### Checklist
 
 - ✓ Fase 0(a) karaoke pasa -80dB — certificado, -85.6dB / -82.0dB (§11.10)
-- ✓ Fase 0(b) primer par A/B (material sin batería inicial) — superado por §11.11 (caso hostil)
-- ✓ Fase 0/11.11 par A/B con caso hostil ("04 - Puente", batería activa desde el segundo 0, costuras en zona activa) — exportado, pendiente de oído del fundador
-- ✓ Motor de orquestación (Workers, troceo-descarte, karaoke con dos salidas vocals+instrumental)
-- ✓ UI: drag&drop, 3 modos con calidad medida u honesta ("en verificación" mientras esté gateado), mezclador mute/solo/play, descarga WAV/FLAC nombrada `{original}_{stem}.{ext}`
+- ✓ Fase 0(b)/11.11 par A/B con caso hostil ("04 - Puente", batería activa desde el segundo 0, costuras en zona activa) — **RATIFICADO por el fundador**: imperceptible en escucha dirigida y localizada sobre las costuras exactas (11.0s/22.0s)
+- ✓ **Los 3 modos habilitados:** Fragmento (bit-perfecto garantizado), Canción completa (calidad alta, ~-50dB medido, ratificada inaudible — §11.11), Karaoke (certificado, -82 a -87dB, cumple -80dB matemáticamente)
+- ✓ Motor de orquestación (Workers, troceo-descarte, karaoke con dos salidas vocals+instrumental) — verificado en vivo en dev y en la URL pública para los 3 modos
+- ✓ UI: drag&drop, 3 modos con calidad medida honesta (tiering: garantizado/alta-ratificada/certificado), mezclador mute/solo/play, descarga WAV/FLAC nombrada `{original}_{stem}.{ext}`
 - ✓ Selector de idioma como `<select>` data-driven (`LANGUAGES[]`), listo para escalar a 10 idiomas sin rediseño
-- ✓ Instrumento de demanda (contador local, sin cookies) + newsletter conectado a Buttondown real (`buttondown.com/trainmusiq`)
-- ✓ Deploy: repo público, GitHub Pages habilitado (branch main, root), cache-busting en 0.6.0
-- ✓ Smoke test en la URL viva: fragmento, karaoke, mute/solo, descarga — sin errores de consola, sin recurrencia de los bugs de la build vieja (magic word / reading 'drums')
-- ✓ README bilingüe actualizado con los modos certificados y el gateo honesto
+- ✓ Instrumento de demanda (contador local, sin cookies)
+- ✓ Newsletter: cuenta real `buttondown.com/trainmusiq` ya no da 404 (existe y está publicada) — pero Buttondown ahora exige un desafío Cloudflare Turnstile en el endpoint de embed-subscribe, que un `fetch()` en segundo plano NUNCA puede pasar (necesita una carga de página real donde un humano resuelva el widget). Se corrigió: el form pasó de fetch+JS a un `<form action=... target="_blank">` nativo, que abre la página real de Buttondown en una pestaña nueva para que el desafío se resuelva ahí. Verificado: el endpoint recibe la solicitud con los parámetros correctos (confirmado con una solicitud directa, que devolvió la página real de verificación de Buttondown, no un 404). La verificación humana del Turnstile y la confirmación del doble opt-in por correo quedan pendientes de que el fundador haga una prueba real — no son automatizables desde acá.
+- ✓ Deploy: repo público, GitHub Pages habilitado (branch main, root), cache-busting en 0.7.0
+- ✓ Smoke test en la URL viva: fragmento, canción completa, karaoke, mute/solo, descarga — sin errores de consola, sin recurrencia de los bugs de la build vieja (magic word / reading 'drums')
+- ✓ README bilingüe actualizado con los 3 modos y sus etiquetas reales
 - ✓ Fase 3 (tope fair-use, modelo financiero, gating de v2.5 por demanda) documentada en `trainmusiq/trainmusiq` roadmap.md §3
-- ⚠ Modo "canción completa" (4 stems): código listo y gateado correctamente (`FULL_SONG_ENABLED = false`), pendiente de la escucha del fundador sobre el caso hostil (§11.11) para encenderse o descartarse definitivamente
-- ⚠ Newsletter: conectado a `buttondown.com/trainmusiq`, pero un chequeo directo del endpoint (`POST .../api/emails/embed-subscribe/trainmusiq`) devolvió 404 al momento de esta sesión — la cuenta necesita existir/estar publicada en Buttondown antes de que alguien pueda suscribirse de verdad (el formulario no falla visiblemente porque usa `mode:"no-cors"`, así que esto no se nota sin este chequeo)
+- ✓ Reglas de copy/marca/datos nuevas documentadas en `trainmusiq/trainmusiq` (brief-diseno.md: afirmar valor sin negar el defecto ajeno, física del tren en la metáfora, lowercase de marca solo en identidad visual; roadmap.md §3: datos de suscriptores nunca se venden, afiliados/sponsorships con divulgación en el newsletter, ads invasivos prohibidos en todos los canales)
 - Recortado a v2.0.1 (próxima sesión, por línea de corte explícita del fundador): i18n más allá de es/en (agregar entradas a `LANGUAGES`/`STRINGS`, la arquitectura ya lo soporta sin rediseño), selector de presets Extracción/Estilo

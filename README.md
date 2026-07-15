@@ -10,15 +10,15 @@ trackjunction separa una canción en pistas (voz, batería, bajo, resto) 100% en
 
 Separar una canción completa de varios minutos en el navegador choca con un límite real de memoria del motor (no puede procesar más de ~35-40 segundos de una sola vez). La solución obvia — trocear la canción en pedazos — tiene una trampa: el motor de separación no fue diseñado para eso, y trocear ingenuamente degrada la calidad de forma medible.
 
-En vez de ignorar el problema o esconderlo, lo medimos: comparamos, con evidencia real (no intuición), la separación troceada contra una separación de referencia sin trocear, en decibeles de diferencia — incluso repitiendo la prueba con material "hostil" (batería activa desde el segundo 0, con las costuras del troceo cayendo justo ahí, no en un silencio favorable). El resultado completo — incluyendo un hallazgo que nos hizo descartar una primera solución y construir una mejor — está documentado en [`docs/especificacion.md`](docs/especificacion.md) §11.
+En vez de ignorar el problema o esconderlo, lo medimos: comparamos, con evidencia real (no intuición), la separación troceada contra una separación de referencia sin trocear, en decibeles de diferencia — incluso repitiendo la prueba con material "hostil" (batería activa desde el segundo 0, con las costuras del troceo cayendo justo ahí, no en un silencio favorable) y con escucha dirigida sobre esas costuras exactas. El resultado completo — incluyendo un hallazgo que nos hizo descartar una primera solución y construir una mejor — está documentado en [`docs/especificacion.md`](docs/especificacion.md) §11.
 
 **Por eso el selector de modos tiene una etiqueta de calidad medida en cada opción, no una promesa genérica.**
 
 ## Qué hace (los 3 modos)
 
 1. **Fragmento** (elegís hasta 34 segundos sobre la forma de onda): el motor procesa el fragmento entero de una sola pasada, sin trocear. **Bit-perfecto garantizado** — no hay nada que medir, porque no hay ningún troceo de por medio.
-2. **Canción completa** (4 stems): troceo con descarte de bordes + Workers en paralelo. **En verificación de calidad — próximamente.** La diferencia medida contra una separación de referencia sin trocear es de −49 a −54dB (peor caso, con material hostil), matemáticamente por debajo del umbral de inaudibilidad que nos propusimos pero de audibilidad todavía no confirmada de oído — el modo queda apagado hasta esa confirmación.
-3. **Karaoke / quitar voz** (canción completa): la mezcla original menos el stem de voz. Como la mezcla nunca se toca, la calidad de este modo depende solo de qué tan bien sale el stem de voz — **certificado: −82 a −87dB**, con margen real sobre el umbral que nos propusimos. Entrega dos salidas: instrumental y voz aislada.
+2. **Canción completa** (4 stems): troceo con descarte de bordes + Workers en paralelo. **Calidad alta, medida y ratificada de oído.** La diferencia medida contra una separación de referencia sin trocear es de ~−50dB (peor caso, incluso con material hostil, batería activa justo en las costuras) — matemáticamente por debajo del umbral de -80dB que sí cumple karaoke, pero confirmado imperceptible en escucha dirigida y localizada sobre esas costuras.
+3. **Karaoke / quitar voz** (canción completa): la mezcla original menos el stem de voz. Como la mezcla nunca se toca, la calidad de este modo depende solo de qué tan bien sale el stem de voz — **certificado: −82 a −87dB**, cumple el umbral de -80dB matemáticamente, sin necesitar ratificación de oído. Entrega dos salidas: instrumental y voz aislada.
 
 Cada stem se descarga en WAV o FLAC. Mezclador con mute/solo por pista y reproducción sincronizada.
 
@@ -64,15 +64,15 @@ trackjunction separates a song into stems (vocals, drums, bass, other) 100% in y
 
 Separating a full multi-minute song in the browser runs into a real memory limit of the engine (it can't process more than ~35-40 seconds at once). The obvious fix — chunking the song into pieces — has a catch: the separation engine wasn't designed for that, and naive chunking measurably degrades quality.
 
-Instead of ignoring or hiding the problem, we measured it: we compared, with real evidence (not intuition), chunked separation against a non-chunked reference separation, in decibels of difference — including repeating the test with "hostile" material (drums active from second 0, with the chunking seams landing right there instead of in a convenient silence). The full result — including a finding that made us discard a first fix and build a better one — is documented in [`docs/especificacion.md`](docs/especificacion.md) §11.
+Instead of ignoring or hiding the problem, we measured it: we compared, with real evidence (not intuition), chunked separation against a non-chunked reference separation, in decibels of difference — including repeating the test with "hostile" material (drums active from second 0, with the chunking seams landing right there instead of in a convenient silence) and directed listening right on those seams. The full result — including a finding that made us discard a first fix and build a better one — is documented in [`docs/especificacion.md`](docs/especificacion.md) §11.
 
 **That's why the mode selector shows a measured quality label on each option, not a generic promise.**
 
 ## What it does (the 3 modes)
 
 1. **Fragment** (pick up to 34 seconds on the waveform): the engine processes the whole fragment in a single pass, no chunking. **Bit-perfect guaranteed** — there's nothing to measure, because there's no chunking involved.
-2. **Full song** (4 stems): edge-discard chunking + parallel Workers. **Quality under verification — coming soon.** The measured difference against a non-chunked reference separation is −49 to −54dB (worst case, with hostile material), mathematically below the inaudibility bar we set but not yet confirmed by ear — the mode stays off until that confirmation.
-3. **Karaoke / remove vocals** (full song): the original mix minus the vocal stem. Since the mix itself is never touched, this mode's quality depends only on how good the vocal stem is — **certified: −82 to −87dB**, with real margin over the bar we set for ourselves. Delivers two outputs: instrumental and isolated vocals.
+2. **Full song** (4 stems): edge-discard chunking + parallel Workers. **High quality, measured and ear-ratified.** The measured difference against a non-chunked reference separation is ~−50dB (worst case, even with hostile material, drums right at the seams) — mathematically below the -80dB bar karaoke meets, but confirmed imperceptible under directed listening right on those seams.
+3. **Karaoke / remove vocals** (full song): the original mix minus the vocal stem. Since the mix itself is never touched, this mode's quality depends only on how good the vocal stem is — **certified: −82 to −87dB**, meets the -80dB bar mathematically, no ear ratification needed. Delivers two outputs: instrumental and isolated vocals.
 
 Each stem downloads as WAV or FLAC. Mixer with per-stem mute/solo and synced playback.
 

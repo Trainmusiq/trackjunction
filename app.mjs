@@ -2,16 +2,15 @@
 // Workers, ver workers/separate.worker.mjs y CLAUDE.md sobre el gotcha de
 // throttling en pestañas en segundo plano).
 
-import { encodeWav } from "./engine/wav.mjs?v=0.6.0";
+import { encodeWav } from "./engine/wav.mjs?v=0.7.0";
 
-// ---- Bandera de habilitación (ver docs/especificacion.md §11.9-§11.10) ----
-// "Canción completa" (4 stems de una canción entera) queda APAGADA hasta que
-// el fundador ratifique de oído los pares A/B exportados en la sesión de
-// verificación (§11.10) — la diferencia medida es -49 a -54dB (peor caso,
-// drums), matemáticamente por debajo de -80dB pero de audibilidad no
-// confirmada todavía. Karaoke SÍ está habilitado: pasa -80dB con margen real
-// (-82 a -87dB, ver §11.10), no depende de esta ratificación.
-const FULL_SONG_ENABLED = false;
+// ---- Bandera de habilitación (ver docs/especificacion.md §11.9-§11.11) ----
+// "Canción completa" (4 stems): ratificada de oído por el fundador (§11.11,
+// caso hostil "04 - Puente" con batería activa en las costuras) — imperceptible
+// en escucha dirigida, aunque la diferencia medida (~-50dB) no llegue al
+// umbral de -80dB que sí cumple karaoke matemáticamente. Kill-switch: en
+// false vuelve a ocultar el modo sin tocar el resto del código.
+const FULL_SONG_ENABLED = true;
 const KARAOKE_ENABLED = true;
 const MAX_FRAGMENT_SECS = 34;
 const TARGET_SAMPLE_RATE = 44100;
@@ -33,17 +32,15 @@ const STRINGS = {
     demandAlready: "Ya contamos tu interés en este navegador — gracias de nuevo.",
     newsletterTitle: "¿Querés saber cuándo llegue la próxima estación?",
     newsletterBtn: "Avisame",
-    newsletterNote: "Sin spam, doble confirmación, podés borrarte cuando quieras.",
-    newsletterOk: "Listo — revisá tu correo para confirmar.",
+    newsletterNote: "Se abre en una pestaña nueva de Buttondown — sin spam, doble confirmación, podés borrarte cuando quieras.",
     modeFragmentTitle: "Fragmento (elegís hasta 34s)",
     modeFragmentQuality: "Bit-perfecto garantizado",
     modeFragmentWhy: "Sin trocear — el motor procesa el fragmento entero de una sola pasada.",
     modeFullTitle: "Canción completa (4 stems)",
-    modeFullQuality: "En verificación de calidad — próximamente",
-    modeFullWhy: "Troceo con descarte de bordes + Workers en paralelo.",
-    modeFullDisabledWhy: "Diferencia medida −49 a −54dB (peor caso) — pendiente de confirmación auditiva del fundador con material hostil. Ver docs/especificacion.md §11.10.",
+    modeFullQuality: "Calidad alta — diferencia medida ~−50dB vs proceso de referencia, ratificada inaudible en escucha dirigida",
+    modeFullWhy: "Troceo con descarte de bordes + Workers en paralelo — verificado con material hostil (batería activa en las costuras). Ver docs/especificacion.md §11.11.",
     modeKaraokeTitle: "Karaoke — quitar voz (canción completa)",
-    modeKaraokeQuality: "Diferencia medida −82 a −87dB vs proceso de referencia",
+    modeKaraokeQuality: "Certificado — diferencia medida −82 a −87dB vs proceso de referencia",
     modeKaraokeWhy: "Mezcla original menos el stem de voz — hereda la calidad del stem de voz, que ya pasa el umbral.",
     stageDecoding: "decodificando audio",
     stageResample: "ajustando frecuencia de muestreo",
@@ -62,17 +59,15 @@ const STRINGS = {
     demandAlready: "We already counted your interest on this browser — thanks again.",
     newsletterTitle: "Want to know when the next station opens?",
     newsletterBtn: "Notify me",
-    newsletterNote: "No spam, double opt-in, unsubscribe anytime.",
-    newsletterOk: "Done — check your email to confirm.",
+    newsletterNote: "Opens in a new Buttondown tab — no spam, double opt-in, unsubscribe anytime.",
     modeFragmentTitle: "Fragment (choose up to 34s)",
     modeFragmentQuality: "Bit-perfect guaranteed",
     modeFragmentWhy: "No chunking — the engine processes the whole fragment in one pass.",
     modeFullTitle: "Full song (4 stems)",
-    modeFullQuality: "Quality under verification — coming soon",
-    modeFullWhy: "Edge-discard chunking + parallel Workers.",
-    modeFullDisabledWhy: "Measured difference −49 to −54dB (worst case) — pending the founder's listening confirmation with hostile material. See docs/especificacion.md §11.10.",
+    modeFullQuality: "High quality — measured difference ~−50dB vs reference process, ratified inaudible under directed listening",
+    modeFullWhy: "Edge-discard chunking + parallel Workers — verified with hostile material (drums active at the seams). See docs/especificacion.md §11.11.",
     modeKaraokeTitle: "Karaoke — remove vocals (full song)",
-    modeKaraokeQuality: "Measured difference −82 to −87dB vs reference process",
+    modeKaraokeQuality: "Certified — measured difference −82 to −87dB vs reference process",
     modeKaraokeWhy: "Original mix minus the vocal stem — inherits the vocal stem's quality, which already passes the bar.",
     stageDecoding: "decoding audio",
     stageResample: "resampling",
@@ -115,7 +110,6 @@ const progressEl = $("progress"), progressPct = $("progressPct"), progressBar = 
 const progressStage = $("progressStage"), progressResource = $("progressResource");
 const resultsCard = $("resultsCard"), stemRowsEl = $("stemRows"), resultQualityEl = $("resultQuality");
 const demandCard = $("demandCard"), demandBtn = $("demandBtn"), demandNote = $("demandNote"), demandCount = $("demandCount");
-const newsletterForm = $("newsletterForm"), newsletterNote = $("newsletterNote");
 
 // ---- Carga de archivo ----
 dropEl.addEventListener("click", () => fileInput.click());
@@ -256,8 +250,7 @@ function renderModes() {
   }));
 
   modesEl.appendChild(modeButton({
-    title: t("modeFullTitle"), quality: t("modeFullQuality"),
-    why: FULL_SONG_ENABLED ? t("modeFullWhy") : t("modeFullDisabledWhy"),
+    title: t("modeFullTitle"), quality: t("modeFullQuality"), why: t("modeFullWhy"),
     enabled: FULL_SONG_ENABLED, onClick: () => selectMode("full"),
   }));
 
@@ -451,7 +444,7 @@ function downloadStem(name, format) {
     mime = "audio/wav"; ext = "wav";
   } else {
     // FLAC: import perezoso, encoder pesado (WASM) — solo se carga si se pide.
-    import("./engine/flac-encode.mjs?v=0.6.0").then(async ({ encodeFlac }) => {
+    import("./engine/flac-encode.mjs?v=0.7.0").then(async ({ encodeFlac }) => {
       const flacBytes = await encodeFlac({ channelData: [l, r], sampleRate: currentResult.sampleRate, bitDepth: 16 });
       triggerDownload(flacBytes, `${originalBaseName}_${name}.flac`, "audio/flac");
     });
@@ -483,22 +476,10 @@ demandBtn.addEventListener("click", () => {
 });
 
 // ---- Newsletter (Buttondown: buttondown.com/trainmusiq, doble opt-in, sin rastreo) ----
-newsletterForm.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const email = $("newsletterEmail").value;
-  try {
-    await fetch("https://buttondown.com/api/emails/embed-subscribe/trainmusiq", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: `email=${encodeURIComponent(email)}`,
-      mode: "no-cors",
-    });
-    newsletterNote.textContent = t("newsletterOk");
-    $("newsletterEmail").value = "";
-  } catch {
-    newsletterNote.textContent = t("newsletterOk"); // no-cors no permite leer la respuesta; asumimos éxito, Buttondown maneja duplicados/errores por correo
-  }
-});
+// El form es un <form action=... target="_blank"> nativo (ver index.html), sin JS:
+// Buttondown exige un desafío Turnstile en este endpoint, que solo puede resolver
+// un humano en una carga de página real de buttondown.com — un fetch() en segundo
+// plano (con mode:"no-cors", que además no deja leer la respuesta) nunca lo pasa.
 
 // ---- Idioma ----
 const langSelect = document.getElementById("langSelect");

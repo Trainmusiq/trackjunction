@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>trackjunction — separación de stems, honesta sobre su propia calidad</title>
-<link rel="stylesheet" href="fonts/fonts.css?v=0.6.0">
+<link rel="stylesheet" href="fonts/fonts.css?v=0.7.0">
 <style>
   :root {
     --bg: #16181d;
@@ -175,11 +175,12 @@
 
   <div class="card">
     <h2 data-i18n="newsletterTitle">¿Querés saber cuándo llegue la próxima estación?</h2>
-    <form class="newsletter" id="newsletterForm">
-      <input type="email" id="newsletterEmail" placeholder="tu@correo.com" required>
+    <form class="newsletter" id="newsletterForm" action="https://buttondown.com/api/emails/embed-subscribe/trainmusiq" method="post" target="_blank">
+      <input type="email" id="newsletterEmail" name="email" placeholder="tu@correo.com" required>
+      <input type="hidden" name="embed" value="1">
       <button class="primary" type="submit" data-i18n="newsletterBtn" style="margin-top:0;">Avisame</button>
     </form>
-    <div class="newsletter-note" id="newsletterNote" data-i18n="newsletterNote">Sin spam, doble confirmación, podés borrarte cuando quieras.</div>
+    <div class="newsletter-note" id="newsletterNote" data-i18n="newsletterNote">Se abre en una pestaña nueva de Buttondown — sin spam, doble confirmación, podés borrarte cuando quieras.</div>
   </div>
 
   <footer>
@@ -192,6 +193,6 @@
   </footer>
 </div>
 
-<script type="module" src="app.mjs?v=0.6.0"></script>
+<script type="module" src="app.mjs?v=0.7.0"></script>
 </body>
 </html>
