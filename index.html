@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>trackjunction — separación de stems, honesta sobre su propia calidad</title>
-<link rel="stylesheet" href="fonts/fonts.css?v=0.5.0">
+<link rel="stylesheet" href="fonts/fonts.css?v=0.6.0">
 <style>
   :root {
     --bg: #16181d;
@@ -114,9 +114,12 @@
   footer { margin-top: 30px; padding-top: 16px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
   footer a { color: var(--ink-dim); font-family: var(--mono); font-size: 11px; text-decoration: none; }
   footer a:hover { color: var(--cyan); }
-  .lang-toggle { display: flex; gap: 6px; }
-  .lang-toggle button { font-family: var(--mono); font-size: 11px; background: none; border: 1px solid var(--line); color: var(--ink-dim); padding: 3px 8px; border-radius: 5px; cursor: pointer; }
-  .lang-toggle button.active { color: var(--amber); border-color: var(--amber); }
+  .lang-select {
+    font-family: var(--mono); font-size: 11px; background: var(--panel-2);
+    border: 1px solid var(--line); color: var(--ink-dim); padding: 4px 8px;
+    border-radius: 5px; cursor: pointer;
+  }
+  .lang-select:hover { color: var(--ink); border-color: var(--ink-dim); }
 </style>
 </head>
 <body>
@@ -185,13 +188,10 @@
       &nbsp;·&nbsp;
       <a href="https://github.com/Trainmusiq/trackjunction" target="_blank" rel="noopener">GitHub</a>
     </div>
-    <div class="lang-toggle" id="langToggle">
-      <button data-lang="es" class="active">ES</button>
-      <button data-lang="en">EN</button>
-    </div>
+    <select class="lang-select" id="langSelect" aria-label="Idioma / Language"></select>
   </footer>
 </div>
 
-<script type="module" src="app.mjs?v=0.5.0"></script>
+<script type="module" src="app.mjs?v=0.6.0"></script>
 </body>
 </html>

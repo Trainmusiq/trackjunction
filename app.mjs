@@ -2,7 +2,7 @@
 // Workers, ver workers/separate.worker.mjs y CLAUDE.md sobre el gotcha de
 // throttling en pestañas en segundo plano).
 
-import { encodeWav } from "./engine/wav.mjs?v=0.5.0";
+import { encodeWav } from "./engine/wav.mjs?v=0.6.0";
 
 // ---- Bandera de habilitación (ver docs/especificacion.md §11.9-§11.10) ----
 // "Canción completa" (4 stems de una canción entera) queda APAGADA hasta que
@@ -39,9 +39,9 @@ const STRINGS = {
     modeFragmentQuality: "Bit-perfecto garantizado",
     modeFragmentWhy: "Sin trocear — el motor procesa el fragmento entero de una sola pasada.",
     modeFullTitle: "Canción completa (4 stems)",
-    modeFullQuality: "Calidad alta — diferencia medida −49dB vs proceso de referencia, inaudible en nuestras pruebas",
+    modeFullQuality: "En verificación de calidad — próximamente",
     modeFullWhy: "Troceo con descarte de bordes + Workers en paralelo.",
-    modeFullDisabledWhy: "Pendiente de confirmación auditiva del fundador — ver docs/especificacion.md §11.10.",
+    modeFullDisabledWhy: "Diferencia medida −49 a −54dB (peor caso) — pendiente de confirmación auditiva del fundador con material hostil. Ver docs/especificacion.md §11.10.",
     modeKaraokeTitle: "Karaoke — quitar voz (canción completa)",
     modeKaraokeQuality: "Diferencia medida −82 a −87dB vs proceso de referencia",
     modeKaraokeWhy: "Mezcla original menos el stem de voz — hereda la calidad del stem de voz, que ya pasa el umbral.",
@@ -68,9 +68,9 @@ const STRINGS = {
     modeFragmentQuality: "Bit-perfect guaranteed",
     modeFragmentWhy: "No chunking — the engine processes the whole fragment in one pass.",
     modeFullTitle: "Full song (4 stems)",
-    modeFullQuality: "High quality — measured difference −49dB vs reference process, inaudible in our tests",
+    modeFullQuality: "Quality under verification — coming soon",
     modeFullWhy: "Edge-discard chunking + parallel Workers.",
-    modeFullDisabledWhy: "Pending the founder's listening confirmation — see docs/especificacion.md §11.10.",
+    modeFullDisabledWhy: "Measured difference −49 to −54dB (worst case) — pending the founder's listening confirmation with hostile material. See docs/especificacion.md §11.10.",
     modeKaraokeTitle: "Karaoke — remove vocals (full song)",
     modeKaraokeQuality: "Measured difference −82 to −87dB vs reference process",
     modeKaraokeWhy: "Original mix minus the vocal stem — inherits the vocal stem's quality, which already passes the bar.",
@@ -78,6 +78,12 @@ const STRINGS = {
     stageResample: "resampling",
   },
 };
+// Lista de idiomas disponibles en el selector — agregar acá + una entrada en
+// STRINGS es lo único que hace falta para sumar un idioma en v2.0.1 (hasta 10).
+const LANGUAGES = [
+  { code: "es", label: "Español" },
+  { code: "en", label: "English" },
+];
 let lang = "es";
 function t(key) { return STRINGS[lang][key] || key; }
 function applyI18n() {
@@ -445,7 +451,7 @@ function downloadStem(name, format) {
     mime = "audio/wav"; ext = "wav";
   } else {
     // FLAC: import perezoso, encoder pesado (WASM) — solo se carga si se pide.
-    import("./engine/flac-encode.mjs?v=0.5.0").then(async ({ encodeFlac }) => {
+    import("./engine/flac-encode.mjs?v=0.6.0").then(async ({ encodeFlac }) => {
       const flacBytes = await encodeFlac({ channelData: [l, r], sampleRate: currentResult.sampleRate, bitDepth: 16 });
       triggerDownload(flacBytes, `${originalBaseName}_${name}.flac`, "audio/flac");
     });
@@ -476,14 +482,12 @@ demandBtn.addEventListener("click", () => {
   demandNote.textContent = already ? t("demandAlready") : t("demandThanks");
 });
 
-// ---- Newsletter (Buttondown, doble opt-in, sin rastreo) ----
-// NOTA para el fundador: reemplazar "trainmusiq" si el usuario de Buttondown
-// es otro, o si se elige un servicio distinto — ver README.
+// ---- Newsletter (Buttondown: buttondown.com/trainmusiq, doble opt-in, sin rastreo) ----
 newsletterForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const email = $("newsletterEmail").value;
   try {
-    await fetch("https://buttondown.email/api/emails/embed-subscribe/trainmusiq", {
+    await fetch("https://buttondown.com/api/emails/embed-subscribe/trainmusiq", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: `email=${encodeURIComponent(email)}`,
@@ -497,11 +501,15 @@ newsletterForm.addEventListener("submit", async (e) => {
 });
 
 // ---- Idioma ----
-document.getElementById("langToggle").addEventListener("click", (e) => {
-  const btn = e.target.closest("button[data-lang]");
-  if (!btn) return;
-  lang = btn.dataset.lang;
-  document.querySelectorAll("#langToggle button").forEach((b) => b.classList.toggle("active", b === btn));
+const langSelect = document.getElementById("langSelect");
+for (const { code, label } of LANGUAGES) {
+  const opt = document.createElement("option");
+  opt.value = code; opt.textContent = label;
+  langSelect.appendChild(opt);
+}
+langSelect.value = lang;
+langSelect.addEventListener("change", () => {
+  lang = langSelect.value;
   applyI18n();
 });
 
