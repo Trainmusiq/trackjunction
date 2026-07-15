@@ -1,9 +1,9 @@
 # trackjunction — Especificación del proyecto
 
 **Ecosistema:** trainmusiq (ver `trainmusiq/trainmusiq` — roadmap.md, manual-continuidad.md, brief-diseno.md) · **Herramienta:** trackjunction — el empalme que divide la canción en vías: separación de stems + estudio (mute/solo, tempo, loops)
-**Versión:** 0.5 · 12 de julio de 2026 (sesión de verificación del troceo — decisión final: servidor-primero, cliente en beta ≤34s, ver §11.9)
+**Versión:** 0.6 · 14 de julio de 2026 (publicación del beta v2.0 — ver §12)
 **Autor:** Juanma (Punta Arenas) con Claude
-**Estado:** construcción v2.0 **bloqueada para canciones completas en el cliente — decisión ratificada, sin más ciclos de depuración pendientes**. El no-determinismo entre llamadas repetidas está resuelto (§11.4/§11.6, patrón de producción ya seguro). El troceo con descarte de bordes (§11.8, técnica estándar de ingeniería, ~50dB mejor que el crossfade probado antes) tampoco alcanza el umbral de -80dB — `drums` queda sistemáticamente lejos en dos pruebas independientes. **Decisión final (§11.9): tier servidor como única vía de calidad garantizada para canciones completas; tier cliente en beta, limitado a clips ≤34s sin trocear, declarado con honestidad en la UI.** La próxima sesión puede construir el MVP del pipeline v2.0 sobre esta decisión. Cascada de rendimiento (§10) revisada con benchmark real de WebGPU. Selector de calidad por modelo documentado como propuesta (§10.10, no implementado).
+**Estado:** **beta v2.0 publicado en https://trainmusiq.github.io/trackjunction/** con Fragmento (bit-perfecto) y Karaoke (certificado -82 a -87dB) habilitados. Canción completa (4 stems) queda **gateada** — el troceo con descarte de bordes (§11.8, ~50dB mejor que el crossfade probado antes) no alcanza el umbral de -80dB en ningún test, ni siquiera con material hostil (batería activa en las costuras, §11.11: -49 a -54dB peor caso) — pendiente de ratificación auditiva del fundador antes de habilitarse. El no-determinismo entre llamadas repetidas está resuelto (§11.4/§11.6, patrón de producción ya seguro). Ver §12 para el checklist completo del MVP.
 
 **Nombre:** "trackjunction" — el empalme ferroviario que divide la canción en vías (stems); "track" es pista de audio Y vía férrea, doble sentido intencional.
 
@@ -486,3 +486,45 @@ Se exportaron 11 archivos WAV reales (44.1kHz/16-bit) a partir de los stems ya c
 - `drums_residuo_amplificado_x300.wav` (diferencia A−B de drums, amplificada ×300 / +49.5dB para hacer audible una diferencia que normalmente está ~50dB por debajo de la señal — **no es lo que se escucha en la mezcla real**, es el "error" aislado para juzgar su carácter; costuras reales en 11.0s y 22.0s, ahí es donde más probablemente se note algo si es audible).
 
 **Estado: exportado, no escuchado todavía — pendiente de ratificación del fundador.** Ubicación (temporal, no commiteado — mismo tratamiento que `test/private/` de centrail, audio derivado de material con copyright del fundador): carpeta de scratchpad de la sesión, abierta en Finder al terminar de generarse. **Si el fundador confirma que es inaudible en la mezcla real (`mix_B_troceado.wav` comparado con `mix_A_referencia.wav`), el modo "canción completa, 4 stems" queda habilitado en el tier gratis con la etiqueta de calidad medida (-49 a -54dB peor caso, honesto); si no, el modo queda deshabilitado (solo Fragmento y Karaoke) hasta una futura sesión que arregle el motor.** Esta sesión continuó con el diseño/construcción de la UI en paralelo (soporta ambos desenlaces, con el modo "canción completa" detrás de una bandera explícita, apagada por defecto hasta la ratificación) — ver §12 para el estado del MVP.
+
+### 11.11 A/B con caso hostil (14 jul 2026): "04 - Puente" — batería activa desde el segundo 0
+
+**Motivación:** el primer par A/B (§11.10-b) usó "5 Pétalo de Sal", que arranca sin batería — las costuras del troceo (11.0s, 22.0s) caían en zonas sin actividad de `drums`, lo que no era un test hostil real para el peor caso medido. Se repitió la prueba completa con "04 - Puente" (`centrail/test/private/`), donde la batería (con efectos) está activa desde el segundo 0 — garantizando que ambas costuras caen en zona de batería activa.
+
+**Metodología:** idéntica a §11.8/§11.10 — referencia 33s sin trocear vs troceo-descarte N=3, descarte=11.7s, mismo offset 0s (sin necesidad de desplazar el clip, a diferencia del test anterior que sí requería buscar dónde empezaba la batería).
+
+| Stem | Pico dif (dBFS) | RMS relativo | Costura pico | Costura RMS relativo |
+|---|---|---|---|---|
+| drums | -65.1/-66.3 | **-52.0dB** | -71.8/-72.0dBFS | -53.4dB |
+| bass | -69.0/-69.3 | -62.2/-62.5dB | -71.2/-71.7dBFS | -63.4/-63.7dB |
+| other | -67.2/-68.1 | -53.6/-55.7dB | -73.1/-73.4dBFS | -55.1/-57.2dB |
+| vocals | -64.9/-65.0 | **-49.0dB** | -73.2dBFS | -50.4/-50.5dB |
+
+**Peor caso overall: -49.0dB (vocals) | Peor caso en costuras: -50.4dB (vocals). NO CUMPLE el umbral de -80dB** — confirma el veredicto de §11.9 con material hostil real, sin cambios de fondo. Hallazgo no esperado: con batería activa en las costuras, `vocals` resultó el peor caso (no `drums`, como en el test anterior con material más benigno para batería) — la brecha entre ambos es chica (-49.0dB vs -52.0dB), así que ningún stem individual domina claramente como "el problema"; el troceo degrada de forma pareja cuando hay señal activa en la costura de cualquier stem.
+
+**Pares A/B exportados para juicio de oído** (mismo tratamiento que §11.10-b: scratchpad de la sesión, NUNCA commiteado, `test/private/` de centrail queda excluido por `.gitignore`): `{drums,vocals,bass,other}_A_referencia.wav` / `_B_troceado.wav`, `mix_A_referencia.wav` / `mix_B_troceado.wav`, `drums_residuo_amplificado_x300.wav` y `vocals_residuo_amplificado_x300.wav` (ambos con foco, ya que vocals empató/superó a drums como peor caso en este material). **Costuras exactas para escucha dirigida: 11.0s y 22.0s** — ahí es donde escuchar primero en `mix_B_troceado.wav` comparado con `mix_A_referencia.wav`, y en los residuos amplificados.
+
+**Estado: exportado, pendiente de ratificación del fundador (mismo criterio que §11.10-b, ahora con el caso hostil correcto).** Este veredicto de oído — sobre material que sí somete el troceo a su peor escenario real — es el que finalmente enciende o descarta el modo "canción completa" del tier gratis.
+
+---
+
+## 12. Estado del MVP v2.0 — beta publicado (14 jul 2026)
+
+**URL en vivo:** https://trainmusiq.github.io/trackjunction/ (GitHub Pages, repo público, branch `main`, sin build step).
+
+### Checklist
+
+- ✓ Fase 0(a) karaoke pasa -80dB — certificado, -85.6dB / -82.0dB (§11.10)
+- ✓ Fase 0(b) primer par A/B (material sin batería inicial) — superado por §11.11 (caso hostil)
+- ✓ Fase 0/11.11 par A/B con caso hostil ("04 - Puente", batería activa desde el segundo 0, costuras en zona activa) — exportado, pendiente de oído del fundador
+- ✓ Motor de orquestación (Workers, troceo-descarte, karaoke con dos salidas vocals+instrumental)
+- ✓ UI: drag&drop, 3 modos con calidad medida u honesta ("en verificación" mientras esté gateado), mezclador mute/solo/play, descarga WAV/FLAC nombrada `{original}_{stem}.{ext}`
+- ✓ Selector de idioma como `<select>` data-driven (`LANGUAGES[]`), listo para escalar a 10 idiomas sin rediseño
+- ✓ Instrumento de demanda (contador local, sin cookies) + newsletter conectado a Buttondown real (`buttondown.com/trainmusiq`)
+- ✓ Deploy: repo público, GitHub Pages habilitado (branch main, root), cache-busting en 0.6.0
+- ✓ Smoke test en la URL viva: fragmento, karaoke, mute/solo, descarga — sin errores de consola, sin recurrencia de los bugs de la build vieja (magic word / reading 'drums')
+- ✓ README bilingüe actualizado con los modos certificados y el gateo honesto
+- ✓ Fase 3 (tope fair-use, modelo financiero, gating de v2.5 por demanda) documentada en `trainmusiq/trainmusiq` roadmap.md §3
+- ⚠ Modo "canción completa" (4 stems): código listo y gateado correctamente (`FULL_SONG_ENABLED = false`), pendiente de la escucha del fundador sobre el caso hostil (§11.11) para encenderse o descartarse definitivamente
+- ⚠ Newsletter: conectado a `buttondown.com/trainmusiq`, pero un chequeo directo del endpoint (`POST .../api/emails/embed-subscribe/trainmusiq`) devolvió 404 al momento de esta sesión — la cuenta necesita existir/estar publicada en Buttondown antes de que alguien pueda suscribirse de verdad (el formulario no falla visiblemente porque usa `mode:"no-cors"`, así que esto no se nota sin este chequeo)
+- Recortado a v2.0.1 (próxima sesión, por línea de corte explícita del fundador): i18n más allá de es/en (agregar entradas a `LANGUAGES`/`STRINGS`, la arquitectura ya lo soporta sin rediseño), selector de presets Extracción/Estilo
