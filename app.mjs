@@ -2,7 +2,7 @@
 // Workers, ver workers/separate.worker.mjs y CLAUDE.md sobre el gotcha de
 // throttling en pestañas en segundo plano).
 
-import { encodeWav } from "./engine/wav.mjs?v=0.7.0";
+import { encodeWav } from "./engine/wav.mjs?v=0.8.0";
 
 // ---- Bandera de habilitación (ver docs/especificacion.md §11.9-§11.11) ----
 // "Canción completa" (4 stems): ratificada de oído por el fundador (§11.11,
@@ -23,7 +23,7 @@ const STRINGS = {
     dropBig: "Suelta una canción aquí, o haz clic para elegir",
     chooseMode: "Elige cómo separarla",
     selTooLong: "máximo 34s — bit-perfecto solo hasta ahí",
-    useFragment: "Separar este fragmento",
+    useFragment: "Separar esta sección",
     results: "Resultado —",
     playAll: "▶ reproducir",
     loop: "loop: off",
@@ -33,15 +33,15 @@ const STRINGS = {
     newsletterTitle: "Te avisamos cuando esté cerca la próxima estación.",
     newsletterBtn: "Avísame",
     newsletterNote: "Se abrirá Buttondown y te llegará un correo — confirma ahí tu inscripción. Sin spam; puedes borrarte cuando quieras.",
-    modeFragmentTitle: "Fragmento (eliges hasta 34s)",
-    modeFragmentQuality: "Bit-perfecto garantizado",
-    modeFragmentWhy: "Sin trocear — el motor procesa el fragmento entero de una sola pasada.",
-    modeFullTitle: "Canción completa (4 stems)",
-    modeFullQuality: "Calidad alta — diferencia medida ~−50dB vs proceso de referencia, ratificada inaudible en escucha dirigida",
-    modeFullWhy: "Troceo con descarte de bordes + Workers en paralelo — verificado con material hostil (batería activa en las costuras). Ver docs/especificacion.md §11.11.",
     modeKaraokeTitle: "Karaoke — quitar voz (canción completa)",
     modeKaraokeQuality: "Certificado — diferencia medida −82 a −87dB vs proceso de referencia",
     modeKaraokeWhy: "Mezcla original menos el stem de voz — hereda la calidad del stem de voz, que ya pasa el umbral.",
+    modeFullTitle: "Canción completa (4 stems)",
+    modeFullQuality: "Calidad alta — diferencia medida ~−50dB vs proceso de referencia, ratificada inaudible en escucha dirigida",
+    modeFullWhy: "Troceo con descarte de bordes + Workers en paralelo — verificado con material hostil (batería activa en las costuras). Ver docs/especificacion.md §11.11.",
+    modeStudioTitle: "Sección de estudio (eliges hasta 34s)",
+    modeStudioQuality: "Bit-perfecto garantizado",
+    modeStudioWhy: "La parte que estás practicando — un solo, un coro, un puente — aislada sin trocear. Hoy con 4 stems; en v2.1 suma guitarra y piano para aislar solos con más precisión.",
     stageDecoding: "decodificando audio",
     stageResample: "ajustando frecuencia de muestreo",
   },
@@ -50,7 +50,7 @@ const STRINGS = {
     dropBig: "Drop a song here, or click to choose",
     chooseMode: "Choose how to separate it",
     selTooLong: "34s max — bit-perfect only up to there",
-    useFragment: "Separate this fragment",
+    useFragment: "Separate this section",
     results: "Result —",
     playAll: "▶ play",
     loop: "loop: off",
@@ -60,15 +60,15 @@ const STRINGS = {
     newsletterTitle: "Want to know when the next station opens?",
     newsletterBtn: "Notify me",
     newsletterNote: "Opens in a new Buttondown tab — no spam, double opt-in, unsubscribe anytime.",
-    modeFragmentTitle: "Fragment (choose up to 34s)",
-    modeFragmentQuality: "Bit-perfect guaranteed",
-    modeFragmentWhy: "No chunking — the engine processes the whole fragment in one pass.",
-    modeFullTitle: "Full song (4 stems)",
-    modeFullQuality: "High quality — measured difference ~−50dB vs reference process, ratified inaudible under directed listening",
-    modeFullWhy: "Edge-discard chunking + parallel Workers — verified with hostile material (drums active at the seams). See docs/especificacion.md §11.11.",
     modeKaraokeTitle: "Karaoke — remove vocals (full song)",
     modeKaraokeQuality: "Certified — measured difference −82 to −87dB vs reference process",
     modeKaraokeWhy: "Original mix minus the vocal stem — inherits the vocal stem's quality, which already passes the bar.",
+    modeFullTitle: "Full song (4 stems)",
+    modeFullQuality: "High quality — measured difference ~−50dB vs reference process, ratified inaudible under directed listening",
+    modeFullWhy: "Edge-discard chunking + parallel Workers — verified with hostile material (drums active at the seams). See docs/especificacion.md §11.11.",
+    modeStudioTitle: "Studio section (choose up to 34s)",
+    modeStudioQuality: "Bit-perfect guaranteed",
+    modeStudioWhy: "The part you're practicing — a solo, a chorus, a bridge — isolated with no chunking. 4 stems today; v2.1 adds guitar and piano to isolate solos with more precision.",
     stageDecoding: "decoding audio",
     stageResample: "resampling",
   },
@@ -220,7 +220,14 @@ canvas.addEventListener("mousedown", (e) => {
 });
 canvas.addEventListener("mousemove", (e) => {
   if (dragStartX === null || !audioBuffer) return;
-  const w = canvas.width;
+  // e.offsetX vive en espacio CSS (ancho renderizado, ver getBoundingClientRect) —
+  // canvas.width es el búfer interno de dibujo (1200, fijo por atributo HTML), NO
+  // el ancho visible. Dividir por canvas.width acá comprimía la selección: en un
+  // canvas renderizado más angosto que 1200px, arrastrar sobre TODO el ancho visible
+  // nunca llegaba al final real de la canción (bug encontrado en producción,
+  // reportado como "Sección de estudio rota" — no se podía seleccionar el tramo
+  // final de un tema).
+  const w = canvas.getBoundingClientRect().width;
   const dur = audioBuffer.duration;
   const x1 = Math.min(dragStartX, e.offsetX), x2 = Math.max(dragStartX, e.offsetX);
   let startSec = (x1 / w) * dur;
@@ -245,8 +252,8 @@ function renderModes() {
   modesEl.innerHTML = "";
 
   modesEl.appendChild(modeButton({
-    title: t("modeFragmentTitle"), quality: t("modeFragmentQuality"), why: t("modeFragmentWhy"),
-    enabled: true, onClick: () => selectMode("fragment"),
+    title: t("modeKaraokeTitle"), quality: t("modeKaraokeQuality"), why: t("modeKaraokeWhy"),
+    enabled: KARAOKE_ENABLED, onClick: () => selectMode("karaoke"),
   }));
 
   modesEl.appendChild(modeButton({
@@ -255,8 +262,8 @@ function renderModes() {
   }));
 
   modesEl.appendChild(modeButton({
-    title: t("modeKaraokeTitle"), quality: t("modeKaraokeQuality"), why: t("modeKaraokeWhy"),
-    enabled: KARAOKE_ENABLED, onClick: () => selectMode("karaoke"),
+    title: t("modeStudioTitle"), quality: t("modeStudioQuality"), why: t("modeStudioWhy"),
+    enabled: true, onClick: () => selectMode("studio"),
   }));
 
   waveformWrap.classList.remove("hidden");
@@ -274,13 +281,13 @@ function modeButton({ title, quality, why, enabled, onClick }) {
 }
 
 function selectMode(mode) {
-  if (mode === "fragment") {
+  if (mode === "studio") {
     waveformWrap.classList.remove("hidden");
     return; // separar se dispara desde useFragmentBtn (ver listener abajo), no acá
   }
   runSeparation(mode);
 }
-useFragmentBtn.addEventListener("click", () => { runSeparation("fragment"); });
+useFragmentBtn.addEventListener("click", () => { runSeparation("studio"); });
 
 // ---- Separación ----
 function getOrchestrator() {
@@ -292,7 +299,7 @@ function getOrchestrator() {
 
 function runSeparation(mode) {
   let left = channelData[0], right = channelData[1];
-  if (mode === "fragment") {
+  if (mode === "studio") {
     const startN = Math.round(selection.startSec * TARGET_SAMPLE_RATE);
     const endN = Math.round(selection.endSec * TARGET_SAMPLE_RATE);
     left = left.slice(startN, endN);
@@ -315,7 +322,7 @@ function runSeparation(mode) {
           Object.entries(msg.stems).map(([name, [l, r]]) => [name, [new Float32Array(l), new Float32Array(r)]])
         ),
         sampleRate: msg.sampleRate,
-        qualityKey: mode === "fragment" ? "modeFragmentQuality" : mode === "karaoke" ? "modeKaraokeQuality" : "modeFullQuality",
+        qualityKey: mode === "studio" ? "modeStudioQuality" : mode === "karaoke" ? "modeKaraokeQuality" : "modeFullQuality",
       };
       renderResults();
     } else if (msg.type === "error") {
@@ -444,7 +451,7 @@ function downloadStem(name, format) {
     mime = "audio/wav"; ext = "wav";
   } else {
     // FLAC: import perezoso, encoder pesado (WASM) — solo se carga si se pide.
-    import("./engine/flac-encode.mjs?v=0.7.0").then(async ({ encodeFlac }) => {
+    import("./engine/flac-encode.mjs?v=0.8.0").then(async ({ encodeFlac }) => {
       const flacBytes = await encodeFlac({ channelData: [l, r], sampleRate: currentResult.sampleRate, bitDepth: 16 });
       triggerDownload(flacBytes, `${originalBaseName}_${name}.flac`, "audio/flac");
     });

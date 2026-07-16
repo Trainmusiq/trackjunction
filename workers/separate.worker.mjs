@@ -5,18 +5,28 @@
 // comodidad de un orquestador persistente).
 //
 // Modos:
-// - "fragment": clip ya recortado a <=34s por la UI, una sola llamada,
-//   bit-perfecto (sin trocear, ver docs/especificacion.md §11.9).
+// - "studio": sección de estudio, clip ya recortado a <=34s por la UI, una
+//   sola llamada, bit-perfecto (sin trocear, ver docs/especificacion.md
+//   §11.9). Hoy con el modelo de 4 stems; evolucionará a 6 stems en v2.1
+//   (guitarra/piano) para aislar solos con más precisión — es el
+//   diferenciador de este modo frente a los de canción completa.
+// - "full": canción completa, troceo-con-descarte + Workers paralelos
+//   (calidad medida, no bit-perfecta — ver §11.8, etiqueta honesta en UI).
 // - "full": canción completa, troceo-con-descarte + Workers paralelos
 //   (calidad medida, no bit-perfecta — ver §11.8, etiqueta honesta en UI).
 // - "karaoke": igual que "full" pero el resultado expuesto es solo
 //   vocals + instrumental (mezcla original - vocals), que hereda la
 //   calidad del stem de voz (§11.10, pasa -80dB con margen).
 
-import { planSegments } from "../engine/segment-plan.mjs?v=0.7.0";
-import { mergeSegmentsDiscard } from "../engine/merge-segments-discard.mjs?v=0.7.0";
-import { computeRefStats } from "../engine/ref-stats.mjs?v=0.7.0";
-import { chooseWorkerPlan, DISCARD_SECS } from "../engine/adaptive-workers.mjs?v=0.7.0";
+import { planSegments } from "../engine/segment-plan.mjs?v=0.8.0";
+import { mergeSegmentsDiscard } from "../engine/merge-segments-discard.mjs?v=0.8.0";
+import { computeRefStats } from "../engine/ref-stats.mjs?v=0.8.0";
+import { chooseWorkerPlan, DISCARD_SECS, SEGMENT_SECS_FALLBACK_TIERS } from "../engine/adaptive-workers.mjs?v=0.8.0";
+
+function isOomError(err) {
+  const msg = (err && err.message) || String(err);
+  return /OOM|out of memory|memory access out of bounds/i.test(msg);
+}
 
 const STEM_NAMES = ["drums", "bass", "other", "vocals"];
 
@@ -80,8 +90,8 @@ self.onmessage = async (ev) => {
 
     let merged;
 
-    if (mode === "fragment") {
-      post({ type: "progress", stage: "separando", pct: 0.05, resourceMessage: "Procesando el fragmento" });
+    if (mode === "studio") {
+      post({ type: "progress", stage: "separando", pct: 0.05, resourceMessage: "Procesando la sección" });
       const plan = planSegments(totalSamples, sampleRate, 1)[0];
       const [result] = await processPlans([plan], leftArr, rightArr, sampleRate, weightsUrl, undefined, 1, () => {
         post({ type: "progress", stage: "separando", pct: 0.5 });
@@ -92,28 +102,45 @@ self.onmessage = async (ev) => {
       }
     } else {
       // "full" o "karaoke": troceo-con-descarte + Workers paralelos.
+      // Reintento con franjas más chicas si el motor aborta por memoria —
+      // el ceiling de 34s está probado en Chrome (ver CLAUDE.md), pero
+      // otros motores JS pueden tener menos margen con la MISMA memoria
+      // WASM fija (glue code, tablas, stack distintos). Nunca reventar:
+      // se avisa y se reintenta más chico antes de rendirse.
       post({ type: "progress", stage: "calculando estadísticas globales", pct: 0.02 });
       const refStats = computeRefStats([leftArr, rightArr]);
 
-      const { nSegments, nParallel, reason } = chooseWorkerPlan({
-        durationSecs, hardwareConcurrency, deviceMemoryGB, overlapSecs: DISCARD_SECS,
-      });
-      const plans = planSegments(totalSamples, sampleRate, nSegments, DISCARD_SECS);
+      let results, plans;
+      for (let tier = 0; tier < SEGMENT_SECS_FALLBACK_TIERS.length; tier++) {
+        const maxSegmentSecs = SEGMENT_SECS_FALLBACK_TIERS[tier];
+        const plan = chooseWorkerPlan({
+          durationSecs, hardwareConcurrency, deviceMemoryGB, overlapSecs: DISCARD_SECS, maxSegmentSecs,
+        });
+        plans = planSegments(totalSamples, sampleRate, plan.nSegments, DISCARD_SECS);
 
-      post({
-        type: "progress", stage: "separando", pct: 0.05,
-        resourceMessage: `Usando ${nParallel} núcleo${nParallel === 1 ? "" : "s"} de tu CPU`,
-        detail: reason,
-      });
+        post({
+          type: "progress", stage: "separando", pct: 0.05,
+          resourceMessage: `Usando ${plan.nParallel} núcleo${plan.nParallel === 1 ? "" : "s"} de tu CPU`,
+          detail: tier === 0
+            ? plan.reason
+            : `memoria insuficiente con franjas de ~${SEGMENT_SECS_FALLBACK_TIERS[tier - 1]}s — reintentando con franjas de ~${maxSegmentSecs}s. ${plan.reason}`,
+        });
 
-      const results = await processPlans(
-        plans, leftArr, rightArr, sampleRate, weightsUrl, refStats, nParallel,
-        (done, total) => post({
-          type: "progress", stage: "separando",
-          pct: 0.05 + 0.85 * (done / total),
-          detail: `franja ${done} de ${total}`,
-        })
-      );
+        try {
+          results = await processPlans(
+            plans, leftArr, rightArr, sampleRate, weightsUrl, refStats, plan.nParallel,
+            (done, total) => post({
+              type: "progress", stage: "separando",
+              pct: 0.05 + 0.85 * (done / total),
+              detail: `franja ${done} de ${total}`,
+            })
+          );
+          break;
+        } catch (err) {
+          const isLastTier = tier === SEGMENT_SECS_FALLBACK_TIERS.length - 1;
+          if (!isOomError(err) || isLastTier) throw err;
+        }
+      }
 
       post({ type: "progress", stage: "combinando franjas", pct: 0.92 });
       const chunkResults = results.map((r) => ({

@@ -29,7 +29,7 @@
 let separateStemsPromise = null;
 function getSeparateStems() {
   if (!separateStemsPromise) {
-    separateStemsPromise = import("../engine/separate.mjs?v=0.7.0").then((m) => m.separateStems);
+    separateStemsPromise = import("../engine/separate.mjs?v=0.8.0").then((m) => m.separateStems);
   }
   return separateStemsPromise;
 }
