@@ -44,6 +44,7 @@ const STRINGS = {
     modeStudioWhy: "La parte que estás practicando — un solo, un coro, un puente — aislada sin trocear. Hoy con 4 stems; en v2.1 suma guitarra y piano para aislar solos con más precisión.",
     stageDecoding: "decodificando audio",
     stageResample: "ajustando frecuencia de muestreo",
+    footerKofi: "Suscríbete para más opciones y mayor velocidad. Y si con la versión gratuita te basta, siempre puedes invitarnos un café ☕.",
   },
   en: {
     tagline: "stem separation, with its quality measured",
@@ -71,6 +72,7 @@ const STRINGS = {
     modeStudioWhy: "The part you're practicing — a solo, a chorus, a bridge — isolated with no chunking. 4 stems today; v2.1 adds guitar and piano to isolate solos with more precision.",
     stageDecoding: "decoding audio",
     stageResample: "resampling",
+    footerKofi: "Subscribe for more options and more speed. And if the free version is already enough for you, you can always buy us a coffee ☕.",
   },
 };
 // Lista de idiomas disponibles en el selector — agregar acá + una entrada en
