@@ -506,6 +506,23 @@ Se exportaron 11 archivos WAV reales (44.1kHz/16-bit) a partir de los stems ya c
 
 **Estado: RATIFICADO por el fundador (14 jul 2026).** Escucha dirigida y localizada sobre las costuras exactas (11.0s/22.0s) en los stems de referencia vs troceados: imperceptible. En los residuos amplificados ×300 a volumen máximo — donde SÍ se escucha algo, por diseño, ya que están hechos para hacer audible lo que normalmente no lo es — el fundador reporta clics de costura exactamente en 11s/22s y **silencio total en el tramo central (11-22s) en todos los stems**, consistente con el hallazgo de §11.8 de que el chunk central lee el buffer completo y es bit-perfecto (la métrica ahí da -Infinity porque no hay diferencia que medir). Este veredicto enciende el modo "canción completa" en el tier gratis — ver §12.
 
+### 11.12 Verificación de respaldo (14 jul 2026): consistencia en "04 - Puente" ENTERA (273.8s), dos grillas de troceo
+
+**Motivación:** §11.11 midió solo un clip de 33s. Antes de dejar "canción completa" encendido en producción sin más chequeos, se corrió un test de respaldo sobre la canción **completa** (273.8s) — imposible de comparar contra una "referencia sin trocear" (excede el límite de memoria del motor por diseño), así que la metodología es **consistencia entre dos grillas de troceo independientes**: grilla A = 26 franjas (el N real que produciría `chooseWorkerPlan` para esta duración en producción), grilla B = 27 franjas (grilla de contraste), ambas con descarte=11.7s, procesadas con paralelismo 8 (según RAM/núcleos del equipo de prueba).
+
+| Stem | Peor overall (dB) | Peor costura (dB) |
+|---|---|---|
+| drums | -56.9 | **-46.5** (en 71.0s/73.7s) |
+| bass | -62.4 | -54.3 |
+| other | -59.6 | -50.2 |
+| vocals | -57.8 | **-47.9** (en 71.0s/60.8s) |
+
+**Lectura correcta de este número — no es comparable 1:1 con §11.11:** este test compara grilla-A contra grilla-B (dos versiones trozadas, cada una ya con su propia desviación pequeña respecto de una referencia ideal), no trozado-contra-referencia-sin-trocear. Comparar dos versiones con error independiente entre sí produce, en general, una diferencia ~3dB peor que comparar una sola versión contra la referencia (los errores no se cancelan, se combinan). Los -46.5dB/-47.9dB medidos en la zona de peor costura calzan exactamente con esa predicción (-49 a -54dB de §11.11, menos ~3dB de margen esperado por el método) — **no indica una degradación nueva**, es el comportamiento esperado de esta metodología de medición.
+
+**Zona de peor costura (~60-74s, donde caen costuras cercanas de ambas grillas: A en 63.18s/73.71s, B en 60.84s/70.98s) exportada para escucha dirigida** (ventana 55-80s, mismo tratamiento que §11.10/§11.11: scratchpad, nunca commiteado): `{drums,vocals,bass,other}_gridA_n26.wav` / `_gridB_n27.wav`, `mix_gridA_n26.wav` / `mix_gridB_n27.wav`, `drums_residuo_amplificado_x300.wav` y `vocals_residuo_amplificado_x300.wav`.
+
+**Estado: RATIFICADO por el fundador (14 jul 2026), a volumen máximo con audífonos, foco en las costuras de la zona 60-74s.** No logra distinguir grilla A de grilla B. El leve "bombeo" audible en `drums` está presente por igual en ambas grillas — es sangrado de la separación (característica del motor, no un artefacto del troceo), no las costuras. **Confirma la ratificación de §11.11 con una segunda verificación independiente, a escala de canción completa real.** El modo "canción completa" queda encendido sin reservas — ver checklist cerrado en §12.
+
 ---
 
 ## 12. Estado del MVP v2.0 — beta publicado, los 3 modos habilitados (14 jul 2026)
@@ -516,7 +533,8 @@ Se exportaron 11 archivos WAV reales (44.1kHz/16-bit) a partir de los stems ya c
 
 - ✓ Fase 0(a) karaoke pasa -80dB — certificado, -85.6dB / -82.0dB (§11.10)
 - ✓ Fase 0(b)/11.11 par A/B con caso hostil ("04 - Puente", batería activa desde el segundo 0, costuras en zona activa) — **RATIFICADO por el fundador**: imperceptible en escucha dirigida y localizada sobre las costuras exactas (11.0s/22.0s)
-- ✓ **Los 3 modos habilitados:** Fragmento (bit-perfecto garantizado), Canción completa (calidad alta, ~-50dB medido, ratificada inaudible — §11.11), Karaoke (certificado, -82 a -87dB, cumple -80dB matemáticamente)
+- ✓ §11.12 verificación de respaldo: consistencia en "04 - Puente" ENTERA (273.8s, dos grillas de troceo, 26 vs 27 franjas) — **RATIFICADO por el fundador** en la zona de peor costura (60-74s), a volumen máximo. Peor caso medido -46.5dB (drums), consistente con la predicción de +3dB esperable al comparar dos versiones trozadas entre sí en vez de trozado-contra-referencia — no es una degradación nueva
+- ✓ **Los 3 modos habilitados, sin reservas:** Fragmento (bit-perfecto garantizado), Canción completa (calidad alta, ~-50dB medido, ratificada inaudible en clip Y en canción completa — §11.11/§11.12), Karaoke (certificado, -82 a -87dB, cumple -80dB matemáticamente)
 - ✓ Motor de orquestación (Workers, troceo-descarte, karaoke con dos salidas vocals+instrumental) — verificado en vivo en dev y en la URL pública para los 3 modos
 - ✓ UI: drag&drop, 3 modos con calidad medida honesta (tiering: garantizado/alta-ratificada/certificado), mezclador mute/solo/play, descarga WAV/FLAC nombrada `{original}_{stem}.{ext}`
 - ✓ Selector de idioma como `<select>` data-driven (`LANGUAGES[]`), listo para escalar a 10 idiomas sin rediseño
