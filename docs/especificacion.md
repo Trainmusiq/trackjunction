@@ -578,3 +578,43 @@ El fundador probó el deploy en **Firefox** (no solo Chrome, usado hasta ahora e
 ### 13.4 Reordenamiento de modos (decisión del fundador)
 
 Orden anterior: Fragmento, Canción completa, Karaoke. **Orden nuevo:** (1) Karaoke — quitar voz, (2) Canción completa (4 stems), (3) Sección de estudio. Los modos de canción completa (el diferencial de trackjunction: karaoke certificado y 4-stems ratificado) van primero; la sección de estudio bit-perfecta queda al final, ahora que su bug de selección está resuelto.
+
+---
+
+## 14. Regresión crítica: OOM real con canción real (16 jul 2026)
+
+El fundador reprodujo el bug del §13.2 con una canción real de 3:26 en Chrome (8 núcleos) Y Firefox (10 núcleos): la separación se colgaba en 5% y reventaba con `Aborted(OOM)`. Esto reveló que el mecanismo de reintento del §13.2 se había validado solo con sintéticos y una simulación aislada — **nunca con audio real**. Regla dura nueva agregada a CLAUDE.md (#11): ningún modo se declara verificado sin al menos una prueba con canción real de 3+ minutos en un navegador real.
+
+### 14.1 Diagnóstico: reproducido con audio real, causa raíz confirmada
+
+Se copiaron dos canciones reales (`centrail/test/private/`, nunca commiteadas) a `test/private/` propio (gitignorado) para pruebas locales: "04 - Puente" (273.8s) y un recorte real de 90s de la misma. Reproducido en el navegador de prueba de esta sesión (Chromium sandboxeado, 10 núcleos, `navigator.deviceMemory` reporta 32 SIN el tope de 8GB que exige el spec — un dato importante: no todos los navegadores aplican ese tope, así que el cálculo de RAM puede ser optimista incluso cuando el navegador SÍ reporta el dato).
+
+**Hallazgo confirmado:** el OOM ocurre porque cada instancia WASM reserva `INITIAL_MEMORY=2048MB` **fijos**, sin importar cuánto audio real contenga la franja que procesa (achicar el ancho de la franja NO reduce este costo). El paralelismo (`nParallel`, cuántas instancias viven SIMULTÁNEAMENTE) es la palanca que de verdad determina el pico de memoria — el código anterior calculaba el "cabe en memoria" mirando solo el tamaño de UNA franja aislada, nunca la memoria agregada de N instancias vivas a la vez.
+
+**Evidencia empírica directa (canción real, no sintética, no simulación):**
+
+| Configuración | Resultado |
+|---|---|
+| `nParallel=8` (canción de 273.8s) | Crash del proceso completo del navegador (~330s) — sin stack trace, sin rastro en consola, la página vuelve a su estado inicial |
+| `nParallel=3` (recorte de 90s) | Reintento disparado tras un error capturable (evidencia de que SÍ es catcheable a veces) |
+| `nParallel=2` (canción de 273.8s) | Crash del proceso (~240s) |
+| `nParallel=2` (recorte de 90s, tras el reintento de arriba) | Crash del proceso (segunda vez) |
+| `nParallel=1` (canción de 273.8s) | **Sin crash** en pruebas extendidas (570s+) |
+| `nParallel=1` (recorte de 90s, canción completa) | **Sin crash** en pruebas extendidas (300s+) |
+| `nParallel=1` (recorte de 90s, karaoke) | **Sin crash** en pruebas extendidas (300s+) |
+
+**Hallazgo importante sobre el tipo de falla:** el crash NO es un error de JavaScript capturable la mayoría de las veces — es un crash del proceso/pestaña completo (consola vacía, sin stack trace, la página recarga a su estado inicial). Esto significa que **el mecanismo de reintento del §13.2 no puede salvar esta situación de forma confiable** — si el proceso muere, ningún `try/catch` corre. La única defensa real es no acercarse al límite desde el principio, no reintentar después de reventar.
+
+### 14.2 Fix: paralelismo por defecto baja a 1 (serie estricta)
+
+`engine/adaptive-workers.mjs`: `MAX_PARALLEL_ABSOLUTE = 1` (antes no existía este techo duro; el cálculo por RAM/núcleos podía llegar a 8-10). `DEFAULT_PARALLEL_WHEN_RAM_UNKNOWN = 1` (antes, sin RAM reportada, se confiaba ciegamente en los núcleos — el bug de Firefox de §13.1). `RETRY_TIERS` ahora reduce el ancho de franja en cada nivel (34→30→26s) mantiniendo el paralelismo en 1 — con el paralelismo ya en el piso, el único lever que queda es reducir el trabajo interno de cada instancia aislada.
+
+**Costo de este fix: la app corre más lento por defecto** (sin el paralelismo de hasta 8 núcleos medido en sesiones anteriores) — decisión deliberada: mejor lento y confiable que rápido y que revienta. Subir el paralelismo por defecto en el futuro requiere la misma rigurosidad que esta sesión (canciones reales, navegadores reales — regla dura #11).
+
+### 14.3 Verificación con audio real — alcance logrado y limitación honesta
+
+**Verificado end-to-end con audio real (completo, sin reservas):** "Sección de estudio" — selección sobre la forma de onda → separación de 34s reales sin trocear → mezclador (mute confirmado, loop confirmado) → descarga (WAV de 5.997.644 bytes, consistente con 34s estéreo 16-bit 44.1kHz). Sin errores de consola, sin crash.
+
+**Verificado parcialmente — el crash está resuelto, pero no se alcanzó el 100%+descarga dentro de esta sesión:** "Canción completa" y "Karaoke", ambos probados con audio real (no sintético) durante más de 900 segundos acumulados a `nParallel=1` sin ningún crash — una mejora directa y medible sobre el comportamiento roto de antes (que crasheaba en minutos con `nParallel` más alto). Pero un solo chunk de 34s de música real tardó mucho más de lo esperado en completarse en el entorno de pruebas sandboxeado de esta sesión (ya documentado en sesiones anteriores como ~10x más lento que hardware real para WASM — este hallazgo sugiere que la brecha es aún mayor con audio real complejo que con los tonos sintéticos usados en pruebas previas). Completar una canción de 3+ minutos entera (8-13 franjas en serie) no fue práctico dentro del tiempo de esta sesión.
+
+**Recomendación honesta:** el fundador debería confirmar la finalización completa (100% + descarga) de "Canción completa" y "Karaoke" con una canción real de 3+ minutos en su propio hardware (más rápido que este sandbox) — la ausencia de crash ya está confirmada con margen amplio (900+ segundos sin reventar, donde antes reventaba en minutos), pero el tiempo total hasta completar una canción larga en `nParallel=1` no se pudo medir de punta a punta en esta sesión.

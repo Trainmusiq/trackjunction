@@ -12,16 +12,14 @@
 //   diferenciador de este modo frente a los de canción completa.
 // - "full": canción completa, troceo-con-descarte + Workers paralelos
 //   (calidad medida, no bit-perfecta — ver §11.8, etiqueta honesta en UI).
-// - "full": canción completa, troceo-con-descarte + Workers paralelos
-//   (calidad medida, no bit-perfecta — ver §11.8, etiqueta honesta en UI).
 // - "karaoke": igual que "full" pero el resultado expuesto es solo
 //   vocals + instrumental (mezcla original - vocals), que hereda la
 //   calidad del stem de voz (§11.10, pasa -80dB con margen).
 
-import { planSegments } from "../engine/segment-plan.mjs?v=0.8.0";
-import { mergeSegmentsDiscard } from "../engine/merge-segments-discard.mjs?v=0.8.0";
-import { computeRefStats } from "../engine/ref-stats.mjs?v=0.8.0";
-import { chooseWorkerPlan, DISCARD_SECS, SEGMENT_SECS_FALLBACK_TIERS } from "../engine/adaptive-workers.mjs?v=0.8.0";
+import { planSegments } from "../engine/segment-plan.mjs?v=0.9.0";
+import { mergeSegmentsDiscard } from "../engine/merge-segments-discard.mjs?v=0.9.0";
+import { computeRefStats } from "../engine/ref-stats.mjs?v=0.9.0";
+import { chooseWorkerPlan, DISCARD_SECS, RETRY_TIERS } from "../engine/adaptive-workers.mjs?v=0.9.0";
 
 function isOomError(err) {
   const msg = (err && err.message) || String(err);
@@ -102,19 +100,20 @@ self.onmessage = async (ev) => {
       }
     } else {
       // "full" o "karaoke": troceo-con-descarte + Workers paralelos.
-      // Reintento con franjas más chicas si el motor aborta por memoria —
-      // el ceiling de 34s está probado en Chrome (ver CLAUDE.md), pero
-      // otros motores JS pueden tener menos margen con la MISMA memoria
-      // WASM fija (glue code, tablas, stack distintos). Nunca reventar:
-      // se avisa y se reintenta más chico antes de rendirse.
+      // Reintento con franjas más chicas Y menos paralelismo si el motor
+      // aborta por memoria (ver RETRY_TIERS y CLAUDE.md) — achicar solo el
+      // ancho de franja NO alcanza (cada instancia WASM reserva los mismos
+      // 2048MB fijos sin importar cuánto audio real contenga), el
+      // paralelismo es la palanca que de verdad importa. Nunca reventar:
+      // se avisa y se reintenta más chico/más en serie antes de rendirse.
       post({ type: "progress", stage: "calculando estadísticas globales", pct: 0.02 });
       const refStats = computeRefStats([leftArr, rightArr]);
 
       let results, plans;
-      for (let tier = 0; tier < SEGMENT_SECS_FALLBACK_TIERS.length; tier++) {
-        const maxSegmentSecs = SEGMENT_SECS_FALLBACK_TIERS[tier];
+      for (let tier = 0; tier < RETRY_TIERS.length; tier++) {
+        const { maxSegmentSecs, maxParallel } = RETRY_TIERS[tier];
         const plan = chooseWorkerPlan({
-          durationSecs, hardwareConcurrency, deviceMemoryGB, overlapSecs: DISCARD_SECS, maxSegmentSecs,
+          durationSecs, hardwareConcurrency, deviceMemoryGB, overlapSecs: DISCARD_SECS, maxSegmentSecs, maxParallel,
         });
         plans = planSegments(totalSamples, sampleRate, plan.nSegments, DISCARD_SECS);
 
@@ -123,7 +122,7 @@ self.onmessage = async (ev) => {
           resourceMessage: `Usando ${plan.nParallel} núcleo${plan.nParallel === 1 ? "" : "s"} de tu CPU`,
           detail: tier === 0
             ? plan.reason
-            : `memoria insuficiente con franjas de ~${SEGMENT_SECS_FALLBACK_TIERS[tier - 1]}s — reintentando con franjas de ~${maxSegmentSecs}s. ${plan.reason}`,
+            : `memoria insuficiente con ${RETRY_TIERS[tier - 1].maxParallel} en paralelo — reintentando con franjas de ~${maxSegmentSecs}s, ${plan.nParallel} en paralelo. ${plan.reason}`,
         });
 
         try {
@@ -137,7 +136,7 @@ self.onmessage = async (ev) => {
           );
           break;
         } catch (err) {
-          const isLastTier = tier === SEGMENT_SECS_FALLBACK_TIERS.length - 1;
+          const isLastTier = tier === RETRY_TIERS.length - 1;
           if (!isOomError(err) || isLastTier) throw err;
         }
       }
