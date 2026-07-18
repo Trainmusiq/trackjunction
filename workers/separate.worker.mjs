@@ -16,10 +16,10 @@
 //   vocals + instrumental (mezcla original - vocals), que hereda la
 //   calidad del stem de voz (§11.10, pasa -80dB con margen).
 
-import { planSegments } from "../engine/segment-plan.mjs?v=0.9.0";
-import { mergeSegmentsDiscard } from "../engine/merge-segments-discard.mjs?v=0.9.0";
-import { computeRefStats } from "../engine/ref-stats.mjs?v=0.9.0";
-import { chooseWorkerPlan, DISCARD_SECS, RETRY_TIERS } from "../engine/adaptive-workers.mjs?v=0.9.0";
+import { planSegments } from "../engine/segment-plan.mjs?v=0.10.0";
+import { mergeSegmentsDiscard } from "../engine/merge-segments-discard.mjs?v=0.10.0";
+import { computeRefStats } from "../engine/ref-stats.mjs?v=0.10.0";
+import { chooseWorkerPlan, DISCARD_SECS, RETRY_TIERS } from "../engine/adaptive-workers.mjs?v=0.10.0";
 
 function isOomError(err) {
   const msg = (err && err.message) || String(err);

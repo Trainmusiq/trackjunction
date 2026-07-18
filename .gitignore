@@ -1,6 +1,11 @@
 node_modules/
 .DS_Store
 test/private/
+test/debug/
+# cualquier audio de prueba (nunca material con copyright en el repo)
+test/**/*.wav
+test/**/*.flac
+test/**/*.mp3
 
 # toolchain local para recompilar vendor/demucs-cpp-wasm (no versionado)
 .build-tools/

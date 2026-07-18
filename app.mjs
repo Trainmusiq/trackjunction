@@ -2,7 +2,7 @@
 // Workers, ver workers/separate.worker.mjs y CLAUDE.md sobre el gotcha de
 // throttling en pestañas en segundo plano).
 
-import { encodeWav } from "./engine/wav.mjs?v=0.9.0";
+import { encodeWav } from "./engine/wav.mjs?v=0.10.0";
 
 // ---- Bandera de habilitación (ver docs/especificacion.md §11.9-§11.11) ----
 // "Canción completa" (4 stems): ratificada de oído por el fundador (§11.11,
@@ -453,7 +453,7 @@ function downloadStem(name, format) {
     mime = "audio/wav"; ext = "wav";
   } else {
     // FLAC: import perezoso, encoder pesado (WASM) — solo se carga si se pide.
-    import("./engine/flac-encode.mjs?v=0.9.0").then(async ({ encodeFlac }) => {
+    import("./engine/flac-encode.mjs?v=0.10.0").then(async ({ encodeFlac }) => {
       const flacBytes = await encodeFlac({ channelData: [l, r], sampleRate: currentResult.sampleRate, bitDepth: 16 });
       triggerDownload(flacBytes, `${originalBaseName}_${name}.flac`, "audio/flac");
     });
