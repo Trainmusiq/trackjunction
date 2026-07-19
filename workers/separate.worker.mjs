@@ -16,10 +16,10 @@
 //   vocals + instrumental (mezcla original - vocals), que hereda la
 //   calidad del stem de voz (§11.10, pasa -80dB con margen).
 
-import { planSegments } from "../engine/segment-plan.mjs?v=0.10.0";
-import { mergeSegmentsDiscard } from "../engine/merge-segments-discard.mjs?v=0.10.0";
-import { computeRefStats } from "../engine/ref-stats.mjs?v=0.10.0";
-import { chooseWorkerPlan, DISCARD_SECS, RETRY_TIERS } from "../engine/adaptive-workers.mjs?v=0.10.0";
+import { planSegments } from "../engine/segment-plan.mjs?v=0.11.0";
+import { mergeSegmentsDiscard } from "../engine/merge-segments-discard.mjs?v=0.11.0";
+import { computeRefStats } from "../engine/ref-stats.mjs?v=0.11.0";
+import { chooseWorkerPlan, DISCARD_SECS, buildRetryTiers, probeMemoryParallelCeiling } from "../engine/adaptive-workers.mjs?v=0.11.0";
 
 function isOomError(err) {
   const msg = (err && err.message) || String(err);
@@ -32,21 +32,41 @@ function post(msg, transfer) {
   self.postMessage(msg, transfer || []);
 }
 
-function runChunk(plan, left, right, sampleRate, weightsUrl, refStats) {
+function runChunk(plan, left, right, sampleRate, weightsUrl, refStats, onProgress) {
   return new Promise((resolve, reject) => {
-    const leftBuf = left.buffer.slice(left.byteOffset, left.byteOffset + left.byteLength);
-    const rightBuf = right.buffer.slice(right.byteOffset, right.byteOffset + right.byteLength);
+    // Recortar al rango [readStart, readEnd) del plan ANTES de mandarlo al
+    // Worker — mergeSegmentsDiscard asume que `stems` viene recortado
+    // exactamente a ese rango (ver su docstring). Sin este recorte, cada
+    // Worker recibía y procesaba la canción ENTERA en vez de su franja
+    // (bug real que causaba el Aborted(OOM) incluso en serie estricta —
+    // ver docs/especificacion.md §15, sesión de cierre del 19 jul 2026).
+    const leftSlice = left.subarray(plan.readStart, plan.readEnd);
+    const rightSlice = right.subarray(plan.readStart, plan.readEnd);
+    const leftBuf = leftSlice.buffer.slice(leftSlice.byteOffset, leftSlice.byteOffset + leftSlice.byteLength);
+    const rightBuf = rightSlice.buffer.slice(rightSlice.byteOffset, rightSlice.byteOffset + rightSlice.byteLength);
     // Worker CLÁSICO a propósito (ver workers/chunk.worker.mjs) — sin
     // {type:"module"} — y de un solo uso: se crea y se termina, nunca se
     // reutiliza para otra llamada.
     const w = new Worker(new URL("./chunk.worker.mjs", import.meta.url));
     w.onmessage = (ev) => {
-      // Ignorar mensajes que no sean el resultado final (ver chunk.worker.mjs:
-      // demucs.js manda sus propios pings de progreso por el mismo canal).
-      if (!ev.data || !ev.data.__final) return;
-      w.terminate();
-      if (ev.data.error) reject(new Error(ev.data.error));
-      else resolve(ev.data);
+      const data = ev.data;
+      if (!data) return;
+      if (data.__final) {
+        w.terminate();
+        if (data.error) reject(new Error(data.error));
+        else resolve(data);
+        return;
+      }
+      // demucs.js manda su propio progreso interno (ventaneo dentro de
+      // _modelDemixSegment) por el mismo canal — antes se tiraba, ahora
+      // alimenta la barra real (Fase 2, sesión de cierre del 19 jul 2026,
+      // ver docs/especificacion.md §15). WASM_LOG y otros mensajes propios
+      // del motor se ignoran a propósito.
+      if (data.msg === "PROGRESS_UPDATE" || data.msg === "PROGRESS_UPDATE_BATCH") {
+        const raw = typeof data.data === "number" ? data.data : 0;
+        const frac = raw > 1 ? raw / 100 : raw; // por si acaso viene como 0-100
+        onProgress?.(Math.max(0, Math.min(1, frac)));
+      }
     };
     w.onerror = (err) => { w.terminate(); reject(err); };
     w.postMessage(
@@ -56,19 +76,29 @@ function runChunk(plan, left, right, sampleRate, weightsUrl, refStats) {
   });
 }
 
-async function processPlans(plans, left, right, sampleRate, weightsUrl, refStats, nParallel, onChunkDone) {
+async function processPlans(plans, left, right, sampleRate, weightsUrl, refStats, nParallel, onProgress) {
   const results = new Array(plans.length);
+  const chunkFractions = new Array(plans.length).fill(0);
   let nextIndex = 0;
   let doneCount = 0;
+
+  function reportOverall() {
+    const sum = chunkFractions.reduce((a, b) => a + b, 0);
+    onProgress(sum / plans.length, doneCount, plans.length);
+  }
 
   async function worker() {
     while (nextIndex < plans.length) {
       const myIndex = nextIndex++;
       const plan = plans[myIndex];
-      const res = await runChunk(plan, left, right, sampleRate, weightsUrl, refStats);
+      const res = await runChunk(plan, left, right, sampleRate, weightsUrl, refStats, (frac) => {
+        chunkFractions[myIndex] = frac;
+        reportOverall();
+      });
       results[myIndex] = res;
+      chunkFractions[myIndex] = 1;
       doneCount++;
-      onChunkDone(doneCount, plans.length);
+      reportOverall();
     }
   }
 
@@ -79,7 +109,7 @@ async function processPlans(plans, left, right, sampleRate, weightsUrl, refStats
 }
 
 self.onmessage = async (ev) => {
-  const { mode, left, right, sampleRate, weightsUrl, hardwareConcurrency, deviceMemoryGB } = ev.data;
+  const { mode, left, right, sampleRate, weightsUrl, hardwareConcurrency } = ev.data;
   try {
     const leftArr = new Float32Array(left);
     const rightArr = new Float32Array(right);
@@ -91,8 +121,8 @@ self.onmessage = async (ev) => {
     if (mode === "studio") {
       post({ type: "progress", stage: "separando", pct: 0.05, resourceMessage: "Procesando la sección" });
       const plan = planSegments(totalSamples, sampleRate, 1)[0];
-      const [result] = await processPlans([plan], leftArr, rightArr, sampleRate, weightsUrl, undefined, 1, () => {
-        post({ type: "progress", stage: "separando", pct: 0.5 });
+      const [result] = await processPlans([plan], leftArr, rightArr, sampleRate, weightsUrl, undefined, 1, (frac) => {
+        post({ type: "progress", stage: "separando", pct: 0.05 + 0.9 * frac });
       });
       merged = {};
       for (const name of STEM_NAMES) {
@@ -101,19 +131,20 @@ self.onmessage = async (ev) => {
     } else {
       // "full" o "karaoke": troceo-con-descarte + Workers paralelos.
       // Reintento con franjas más chicas Y menos paralelismo si el motor
-      // aborta por memoria (ver RETRY_TIERS y CLAUDE.md) — achicar solo el
-      // ancho de franja NO alcanza (cada instancia WASM reserva los mismos
-      // 2048MB fijos sin importar cuánto audio real contenga), el
-      // paralelismo es la palanca que de verdad importa. Nunca reventar:
+      // aborta por memoria (ver buildRetryTiers y CLAUDE.md). Nunca reventar:
       // se avisa y se reintenta más chico/más en serie antes de rendirse.
       post({ type: "progress", stage: "calculando estadísticas globales", pct: 0.02 });
       const refStats = computeRefStats([leftArr, rightArr]);
 
+      post({ type: "progress", stage: "midiendo memoria disponible", pct: 0.03 });
+      const memoryProbeCeiling = probeMemoryParallelCeiling();
+      const retryTiers = buildRetryTiers(memoryProbeCeiling);
+
       let results, plans;
-      for (let tier = 0; tier < RETRY_TIERS.length; tier++) {
-        const { maxSegmentSecs, maxParallel } = RETRY_TIERS[tier];
+      for (let tier = 0; tier < retryTiers.length; tier++) {
+        const { maxSegmentSecs, maxParallel } = retryTiers[tier];
         const plan = chooseWorkerPlan({
-          durationSecs, hardwareConcurrency, deviceMemoryGB, overlapSecs: DISCARD_SECS, maxSegmentSecs, maxParallel,
+          durationSecs, hardwareConcurrency, memoryProbeCeiling, overlapSecs: DISCARD_SECS, maxSegmentSecs, maxParallel,
         });
         plans = planSegments(totalSamples, sampleRate, plan.nSegments, DISCARD_SECS);
 
@@ -122,21 +153,21 @@ self.onmessage = async (ev) => {
           resourceMessage: `Usando ${plan.nParallel} núcleo${plan.nParallel === 1 ? "" : "s"} de tu CPU`,
           detail: tier === 0
             ? plan.reason
-            : `memoria insuficiente con ${RETRY_TIERS[tier - 1].maxParallel} en paralelo — reintentando con franjas de ~${maxSegmentSecs}s, ${plan.nParallel} en paralelo. ${plan.reason}`,
+            : `memoria insuficiente con ${retryTiers[tier - 1].maxParallel} en paralelo — reintentando con franjas de ~${maxSegmentSecs}s, ${plan.nParallel} en paralelo. ${plan.reason}`,
         });
 
         try {
           results = await processPlans(
             plans, leftArr, rightArr, sampleRate, weightsUrl, refStats, plan.nParallel,
-            (done, total) => post({
+            (overallFrac, done, total) => post({
               type: "progress", stage: "separando",
-              pct: 0.05 + 0.85 * (done / total),
+              pct: 0.05 + 0.85 * overallFrac,
               detail: `franja ${done} de ${total}`,
             })
           );
           break;
         } catch (err) {
-          const isLastTier = tier === RETRY_TIERS.length - 1;
+          const isLastTier = tier === retryTiers.length - 1;
           if (!isOomError(err) || isLastTier) throw err;
         }
       }

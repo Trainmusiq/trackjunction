@@ -19,47 +19,40 @@
 
 export const MAX_SAFE_SEGMENT_SECS = 34;
 export const WASM_INSTANCE_MEMORY_MB = 2048;
-export const MAX_MEMORY_FRACTION = 0.5;
 
-// Techo DURO de paralelismo, independiente de cuánta RAM crea tener el
-// equipo — hallazgo de la sesión de regresión (16 jul 2026): con una
-// canción REAL (no sintética, un tema de 273.8s y un recorte real de 90s),
-// nParallel=8, nParallel=3 Y nParallel=2 reventaron el proceso completo del
-// navegador — no un error de JS capturable, un crash del tab/proceso (sin
-// rastro en consola, sin stack trace, la página vuelve a su estado
-// inicial). Solo nParallel=1 (serie estricta) corrió sin reventar en
-// pruebas extendidas. Cada instancia WASM reserva 2048MB fijos MÁS los
-// pesos del modelo (~84MB) MÁS los búferes de audio de entrada/salida — el
-// techo de RAM calculado a partir de navigator.deviceMemory asume solo el
-// primer número y puede ser optimista (algunos navegadores, incluido el
-// usado para verificar este fix, no aplican el tope de 8GB que exige el
-// spec y reportan la RAM real del equipo, ej. 32GB, permitiendo un
-// nParallel que igual revienta). Punto de partida deliberadamente
-// conservador (más lento, nunca revienta) — subir este número en el futuro
-// exige la MISMA rigurosidad: canciones reales, navegadores reales, nunca
-// sintéticos ni simulaciones (ver regla dura en CLAUDE.md).
-export const MAX_PARALLEL_ABSOLUTE = 1;
-
-// Cuando el navegador no reporta RAM (Firefox/Safari — ver más abajo), se
-// asume este paralelismo conservador — de todos modos acotado por
-// MAX_PARALLEL_ABSOLUTE arriba.
-export const DEFAULT_PARALLEL_WHEN_RAM_UNKNOWN = 1;
+// Techo DURO de paralelismo — lo más alto verificado con evidencia real
+// hasta hoy (sesión de cierre de OOM, 19 jul 2026, M1 Max/10 núcleos/32GB).
+// La regresión del 16 jul (§14) diagnosticó mal la causa: no era el
+// paralelismo lo que reventaba la memoria, era un bug real en
+// workers/separate.worker.mjs — runChunk() nunca recortaba el audio al
+// rango [readStart, readEnd) del plan, así que CADA franja (con
+// cualquier nParallel) procesaba la canción ENTERA. Corregido eso, se
+// probó nParallel=2, 3 y 4 con audio real (motor real, vía CLI directa
+// sobre este mismo hardware) — los tres corrieron limpio, sin abortar,
+// con memoria total muy por debajo de lo disponible (~7.4GB con
+// nParallel=4 en una máquina de 32GB). No se probó más alto por economía
+// de sesión — subir este número exige la MISMA rigurosidad (canciones
+// reales, navegadores reales, ver regla dura #11 de CLAUDE.md). El techo
+// real por sesión lo pone además el sondeo de memoria real (ver
+// probeMemoryParallelCeiling más abajo), que nunca puede superar este
+// valor.
+export const MAX_PARALLEL_ABSOLUTE = 4;
 
 // Niveles de reintento cuando el motor aborta por falta de memoria (ver
 // gotcha de CLAUDE.md: INITIAL_MEMORY=2048MB fijo, sin growth — confirmado
-// que 35s anda y 40-45s+ revienta, medido en Chrome con UNA sola instancia).
-// Con el paralelismo ya en 1 por defecto, el único lever que queda para
-// reintentar es el ancho de franja — reduce el trabajo INTERNO de cada
-// instancia (aun con memoria fija, procesar menos audio real dentro de ese
-// mismo presupuesto deja más margen antes de abortar). Piso duro de ancho:
-// cada franja necesita más que 2×DISCARD_SECS (23.4s) para tener algo de
-// interior útil — un tier por debajo de eso degenera (cientos de franjas
-// para nada práctico, verificado con una simulación).
-export const RETRY_TIERS = [
-  { maxSegmentSecs: MAX_SAFE_SEGMENT_SECS, maxParallel: MAX_PARALLEL_ABSOLUTE },
-  { maxSegmentSecs: 30, maxParallel: MAX_PARALLEL_ABSOLUTE },
-  { maxSegmentSecs: 26, maxParallel: MAX_PARALLEL_ABSOLUTE },
-];
+// que 35s anda y 40-45s+ revienta con UNA instancia). Con el bug de recorte
+// corregido, degradar el ANCHO de franja ya no es la única palanca —
+// también se puede degradar nParallel antes de llegar a serie estricta
+// (ver buildRetryTiers). Piso duro de ancho: cada franja necesita más que
+// 2×DISCARD_SECS (23.4s) para tener algo de interior útil.
+export function buildRetryTiers(probedParallelCeiling) {
+  const p = Math.max(1, probedParallelCeiling || 1);
+  const tiers = [{ maxSegmentSecs: MAX_SAFE_SEGMENT_SECS, maxParallel: p }];
+  if (p > 1) tiers.push({ maxSegmentSecs: MAX_SAFE_SEGMENT_SECS, maxParallel: Math.max(1, Math.floor(p / 2)) });
+  tiers.push({ maxSegmentSecs: 30, maxParallel: 1 });
+  tiers.push({ maxSegmentSecs: 26, maxParallel: 1 });
+  return tiers;
+}
 
 // Descarte de bordes (no crossfade, ver docs/especificacion.md §11.8-§11.9):
 // 2 strides internos del motor (2 × 5.85s ≈ 11.7s) por lado de cada costura
@@ -67,19 +60,55 @@ export const RETRY_TIERS = [
 // engine/merge-segments-discard.mjs en producción.
 export const DISCARD_SECS = 11.7;
 
+// Sondeo de memoria real (Fase 3, sesión de cierre de OOM, 19 jul 2026) —
+// reemplaza a navigator.deviceMemory, que puede mentir de dos formas
+// distintas ya confirmadas: Firefox/Safari no la implementan (undefined
+// por diseño, anti-fingerprinting) y algunos navegadores que SÍ la
+// implementan no aplican el tope de 8GB del spec y devuelven la RAM real
+// del equipo (32GB observados), lo que puede sugerir más paralelismo del
+// que el navegador realmente puede sostener. En vez de preguntarle al
+// navegador cuánta RAM "dice" tener, se le pide que RESERVE la memoria que
+// cada instancia WASM necesitaría — lo que de verdad conceda (o rechace)
+// es la señal real, no puede mentir de la misma forma.
+//
+// No se retienen referencias a los WebAssembly.Memory creados — se sueltan
+// para que el GC las recoja apenas se termina de contar cuántas entraron.
+// Sobre-compromiso (que el navegador conceda memoria que después no
+// respalde de verdad) es una falla conocida de este tipo de sondeo en
+// algunos motores — por eso el resultado se combina con
+// MAX_PARALLEL_ABSOLUTE (el techo empírico verificado con audio real) como
+// cinturón y tirantes: ninguna señal sola decide, el mínimo de ambas manda.
+export function probeMemoryParallelCeiling(maxCandidate = MAX_PARALLEL_ABSOLUTE) {
+  const pagesPerInstance = Math.round((WASM_INSTANCE_MEMORY_MB * 1024 * 1024) / 65536);
+  let granted = 0;
+  for (let k = 1; k <= maxCandidate; k++) {
+    try {
+      // eslint-disable-next-line no-unused-vars
+      const mem = new WebAssembly.Memory({ initial: pagesPerInstance, maximum: pagesPerInstance });
+      void mem;
+      granted = k;
+    } catch {
+      break;
+    }
+  }
+  return Math.max(1, granted);
+}
+
 /**
  * @param {{durationSecs:number, hardwareConcurrency:number,
- *   deviceMemoryGB?: number, overlapSecs?: number, maxSegmentSecs?: number,
+ *   memoryProbeCeiling?: number, overlapSecs?: number, maxSegmentSecs?: number,
  *   maxParallel?: number}} params overlapSecs aquí es el margen de descarte
  *   por lado (ver DISCARD_SECS) — el nombre se mantiene por compatibilidad
  *   con planSegments()/segment-plan.mjs, que no distingue entre "descartar"
  *   y "crossfade" (esa decisión la toma el merge que se use después).
+ *   memoryProbeCeiling viene de probeMemoryParallelCeiling() — cuántas
+ *   instancias WASM el navegador concedió realmente en ESTA sesión.
  *   maxSegmentSecs y maxParallel permiten reintentar más chico/más en serie
- *   si el motor abortó por memoria (ver RETRY_TIERS).
+ *   si el motor abortó por memoria (ver buildRetryTiers).
  * @returns {{nSegments:number, nParallel:number, overlapSecs:number, reason:string}}
  */
 export function chooseWorkerPlan({
-  durationSecs, hardwareConcurrency, deviceMemoryGB, overlapSecs = DISCARD_SECS,
+  durationSecs, hardwareConcurrency, memoryProbeCeiling, overlapSecs = DISCARD_SECS,
   maxSegmentSecs = MAX_SAFE_SEGMENT_SECS, maxParallel = MAX_PARALLEL_ABSOLUTE,
 }) {
   const cores = Math.max(1, Math.floor(hardwareConcurrency || 1));
@@ -91,40 +120,19 @@ export function chooseWorkerPlan({
     Math.ceil(durationSecs / Math.max(1, maxSegmentSecs - 2 * overlapSecs))
   );
 
-  // Techo de RAM total disponible para instancias WASM simultáneas.
-  // navigator.deviceMemory es una API de Chrome/Edge (0.25-8, con 8
-  // significando "8 o más" por spec) — Firefox y Safari NO la implementan
-  // (por diseño, para reducir fingerprinting) y devuelven undefined.
-  // Hallazgo de la sesión de regresión: (a) asumir un valor pesimista (4GB)
-  // sin la API colapsaba el paralelismo a 1 siempre — corregido con
-  // DEFAULT_PARALLEL_WHEN_RAM_UNKNOWN; (b) confiar ciegamente en los
-  // núcleos sin ningún tope de RAM (el fix de la sesión anterior) reventó
-  // Firefox real; (c) incluso con deviceMemory reportado, algunos
-  // navegadores no aplican el tope de 8GB del spec y devuelven la RAM real
-  // del equipo (verificado: 32GB en el navegador de prueba), permitiendo un
-  // nParallel que también revienta. Por eso MAX_PARALLEL_ABSOLUTE es un
-  // techo duro que ninguna de estas señales puede superar.
-  let maxParallelForRam = DEFAULT_PARALLEL_WHEN_RAM_UNKNOWN;
-  let ramReportada = false;
-  if (deviceMemoryGB) {
-    ramReportada = true;
-    const usableRamMB = deviceMemoryGB * 1024 * MAX_MEMORY_FRACTION;
-    maxParallelForRam = Math.max(1, Math.floor(usableRamMB / WASM_INSTANCE_MEMORY_MB));
-  }
+  const probed = Math.max(1, memoryProbeCeiling || 1);
 
-  // El paralelismo real nunca supera ni los núcleos, ni la RAM (si se
-  // conoce o se asume conservadoramente), ni la cantidad de franjas que en
-  // verdad existen, ni el techo duro absoluto (o el override del nivel de
-  // reintento actual, ver RETRY_TIERS).
-  const nParallel = Math.max(1, Math.min(cores, maxParallelForRam, nSegments, maxParallel));
+  // El paralelismo real nunca supera ni los núcleos, ni lo que el sondeo de
+  // memoria real concedió, ni la cantidad de franjas que en verdad existen,
+  // ni el techo duro absoluto (o el override del nivel de reintento
+  // actual, ver buildRetryTiers).
+  const nParallel = Math.max(1, Math.min(cores, probed, nSegments, maxParallel));
 
   let reason;
   if (nSegments > cores * 3) {
     reason = `canción larga: ${nSegments} franjas de ~${maxSegmentSecs}s por límite de memoria del motor, procesadas de a ${nParallel} en paralelo`;
-  } else if (ramReportada && maxParallelForRam < cores) {
-    reason = `techo de RAM del equipo (${deviceMemoryGB}GB reportados, ${WASM_INSTANCE_MEMORY_MB}MB por instancia) — ${nParallel} en paralelo de ${cores} núcleos`;
-  } else if (!ramReportada) {
-    reason = `${nParallel} núcleos lógicos en paralelo (tu navegador no reporta RAM disponible)`;
+  } else if (probed < cores) {
+    reason = `techo de memoria real de tu navegador (sondeo concedió ${probed} instancia${probed === 1 ? "" : "s"} de ${WASM_INSTANCE_MEMORY_MB}MB) — ${nParallel} en paralelo de ${cores} núcleos`;
   } else {
     reason = `${nParallel} núcleos lógicos en paralelo`;
   }

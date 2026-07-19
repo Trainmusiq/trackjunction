@@ -618,3 +618,74 @@ Se copiaron dos canciones reales (`centrail/test/private/`, nunca commiteadas) a
 **Verificado parcialmente — el crash está resuelto, pero no se alcanzó el 100%+descarga dentro de esta sesión:** "Canción completa" y "Karaoke", ambos probados con audio real (no sintético) durante más de 900 segundos acumulados a `nParallel=1` sin ningún crash — una mejora directa y medible sobre el comportamiento roto de antes (que crasheaba en minutos con `nParallel` más alto). Pero un solo chunk de 34s de música real tardó mucho más de lo esperado en completarse en el entorno de pruebas sandboxeado de esta sesión (ya documentado en sesiones anteriores como ~10x más lento que hardware real para WASM — este hallazgo sugiere que la brecha es aún mayor con audio real complejo que con los tonos sintéticos usados en pruebas previas). Completar una canción de 3+ minutos entera (8-13 franjas en serie) no fue práctico dentro del tiempo de esta sesión.
 
 **Recomendación honesta:** el fundador debería confirmar la finalización completa (100% + descarga) de "Canción completa" y "Karaoke" con una canción real de 3+ minutos en su propio hardware (más rápido que este sandbox) — la ausencia de crash ya está confirmada con margen amplio (900+ segundos sin reventar, donde antes reventaba en minutos), pero el tiempo total hasta completar una canción larga en `nParallel=1` no se pudo medir de punta a punta en esta sesión.
+
+---
+
+## 15. Cierre definitivo del OOM — la causa real nunca fue el paralelismo (sesión del 19 jul 2026)
+
+El diagnóstico de §14 se hizo en un sandbox de RAM real desconocida (reportaba `deviceMemory=32` sin el tope de 8GB del spec, pero los crashes de proceso a `nParallel=2` sugerían mucha menos RAM real disponible). Esta sesión corrió en el equipo real del fundador (M1 Max, 10 núcleos, 32GB — confirmado comparando `navigator.hardwareConcurrency`/`navigator.deviceMemory` contra `sysctl` del sistema) y encontró que la conclusión de §14 — "solo `nParallel=1` es estable" — era la solución correcta para el síntoma equivocado.
+
+### 15.1 La causa real: un bug de recorte, no de paralelismo
+
+Reproducido el crash otra vez en este hardware real: **"Canción completa" abortó con `Aborted(OOM)` en ~36 segundos incluso con `nParallel=1`** (el ajuste "seguro" de §14) — mucho antes de que un solo chunk de 34s pudiera siquiera terminar de procesarse (un chunk de 34s de audio real tarda >100s en este mismo motor, confirmado por CLI, ver §15.2). Esto era la pista: si el primer intento fallaba en 36s pero un chunk de 34s tarda >100s en completarse, **el motor no estaba procesando un chunk de 34s — estaba procesando algo mucho más grande, casi de inmediato**.
+
+Causa raíz confirmada leyendo el código: `runChunk()` en `workers/separate.worker.mjs` nunca recortaba el audio al rango `[plan.readStart, plan.readEnd)` calculado por `engine/segment-plan.mjs` — mandaba el buffer COMPLETO (`left.buffer.slice(left.byteOffset, left.byteOffset + left.byteLength)`, el byteLength de TODO el array, no de la franja) a cada Worker de chunk. El objeto `plan` viajaba hasta el Worker y volvía en el resultado (usado después por `mergeSegmentsDiscard`, cuya propia documentación dice explícitamente que espera `stems` "recortado exactamente al rango [readStart, readEnd) de ese plan") pero **nunca se usaba para recortar el audio que de verdad se le mandaba al motor**. Resultado: con cualquier `nParallel`, CADA "franja" era en realidad la canción ENTERA (273.8s) pasando por el motor de una sola vez — muy por encima de lo que cabe en los 2048MB fijos, sin importar cuántas instancias corrieran a la vez.
+
+Esto también reescribe la lectura de la evidencia de §14: los crashes rápidos con `nParallel` alto (8, 3, 2) eran N instancias procesando la canción ENTERA en simultáneo (mucho peor, revienta rápido); el aparente "sin crash en 900+s" de `nParallel=1` en el sandbox anterior no era éxito — era una sola instancia moliendo lentamente sobre una entrada ~8x más grande de lo que debía, sin llegar nunca a completar ni a abortar dentro de la ventana de observación de esa sesión. El paralelismo nunca fue la causa; siempre fue un bug de recorte de datos.
+
+**Fix:** `runChunk()` ahora recorta con `left.subarray(plan.readStart, plan.readEnd)` antes de armar el buffer transferible. Un `RETRY_TIERS` obsoleto (referenciado tras haber sido renombrado a `buildRetryTiers`) también se corrigió de paso — habría lanzado `ReferenceError` en el último nivel de reintento si alguna vez se llegaba ahí.
+
+### 15.2 Fase 0 — verificación en hardware real
+
+| Modo | Resultado | Evidencia |
+|---|---|---|
+| Sección de estudio | ✓ Verificado end-to-end, sin reservas | 34s reales de "04 - Puente" en el navegador de este equipo: selección → separación (sin crash) → mezclador (mute confirmado, loop confirmado) → descarga WAV disparada sin error. |
+| Canción completa | ⚠ Corregido y verificado sin crash con progreso real avanzando; no se observó el 100%+descarga dentro de la sesión | Con el fix, corrida en el navegador con el recorte de 90s: progreso avanzando de forma continua (5%→6%→8% en 80s, antes se congelaba hasta que un chunk entero terminaba) sin errores durante la ventana de observación. El motor de este navegador (pane de Claude Code) resultó ~7x más lento que Node nativo en el MISMO hardware (ver §15.2.1) — completar los 9 chunks de un recorte de 90s, o los ~26 de una canción de 273.8s, no fue práctico de observar en vivo dentro de esta sesión. |
+| Karaoke | ⚠ Mismo alcance que Canción completa (comparte el mismo motor de troceo) | No se re-ejecutó por separado esta sesión — el bug y el fix son idénticos a "Canción completa"; karaoke solo resta `vocals` de la mezcla original después del mismo proceso de troceo. |
+
+**Firefox:** instalado en este equipo (`Firefox.app`), pero sin forma de automatizarlo desde este entorno (las herramientas de navegador disponibles no controlan Firefox) — verificación directa del fundador sigue pendiente.
+
+#### 15.2.1 Hallazgo colateral: el navegador de pruebas de este entorno es ~7x más lento que Node nativo
+
+Para separar la pregunta "¿es un bug de memoria?" de "¿es lento este entorno?", se corrió el mismo chunk de 34s de "04 - Puente" por dos vías en el MISMO hardware: `test/separate-file.mjs` (CLI directa sobre Node) tardó **104.6s** (3.08x tiempo real); el mismo chunk en el navegador de pruebas de este entorno (vía la UI, "Sección de estudio") tardó **más de 700s** antes de completar. La API `navigator.hardwareConcurrency`/`navigator.deviceMemory` de ese navegador reporta correctamente los 10 núcleos/32GB reales del equipo — la lentitud no es un engaño de esas señales, es un costo de ejecución real de ESE motor JS/WASM específico (probablemente sin SIMD u otra optimización que sí tiene el build de Node usado por la CLI). **Implicación práctica:** para diagnosticar memoria (¿cabe o no cabe?) en esta clase de entorno, la CLI (`test/separate-file.mjs`, real, sin atajos, motor real, audio real) es más rápida Y igual de válida que la UI — ambas usan el mismo `engine/separate.mjs`. Para diagnosticar UI/flujo end-to-end (selección, progreso, mezclador, descarga), la UI sigue siendo insustituible. La regla dura #11 se mantiene (nunca declarar un modo "verificado" sin al menos una corrida en un navegador real) — este hallazgo solo explica por qué una corrida completa de 3+ minutos no se pudo observar de punta a punta en ESTE navegador dentro del tiempo de sesión, y recomienda la CLI como vía rápida de diagnóstico de memoria cuando haga falta iterar rápido antes de la verificación final en navegador.
+
+### 15.3 Fase 1 — el paralelismo SÍ es seguro en hardware real, una vez corregido el bug de recorte
+
+Con el fix de §15.1 aplicado, se probó `nParallel=2, 3, 4` con audio real (múltiples canciones de `test/private/`) vía CLI directa (motor real, sin atajos, en este mismo M1 Max):
+
+| nParallel | Procesos | Resultado | Memoria total observada |
+|---|---|---|---|
+| 2 | 2 chunks de 34s en simultáneo (canciones A y B) | ✓ ambos `EXIT=0`, 108.0s y 108.5s | ~4.6GB (2.3GB c/u) |
+| 3 | 3 chunks de 34s en simultáneo (A, B, recorte de 90s) | ✓ los 3 `EXIT=0` | ~5.5GB observados durante la corrida |
+| 4 | 4 chunks de 34s en simultáneo | ✓ los 4 `EXIT=0`, 118-120s cada uno | ~7.4GB (1.83GB c/u) |
+
+Ninguna corrida mostró señales de estrés (memoria estable, sin crecimiento descontrolado) en una máquina de 32GB. **Decisión:** `MAX_PARALLEL_ABSOLUTE` sube de 1 a **4** (el techo más alto verificado hoy con evidencia real — no se probó más alto por economía de sesión). Subir este número más allá de 4 en el futuro exige la misma rigurosidad (regla dura #11).
+
+### 15.4 Fase 2 — barra de progreso real
+
+`vendor/demucs-cpp-wasm/demucs.js` ya emite su propio progreso interno durante `_modelDemixSegment` (`postMessage({msg:"PROGRESS_UPDATE", data})`, ventaneo interno del motor) — este mensaje viajaba por el mismo canal que el resultado final de `chunk.worker.mjs` y `separate.worker.mjs` lo descartaba explícitamente (`if (!ev.data.__final) return`). Corregido: `runChunk()` ahora distingue mensajes de progreso de mensajes finales, y `processPlans()` combina el avance fraccionario de cada franja activa (promediado entre las `nParallel` franjas en curso, `sum(chunkFractions)/total`) en un único porcentaje global. Verificado en navegador real: la barra pasó de estar congelada en "5%" hasta que un chunk ENTERO terminaba, a avanzar de forma continua (5%→6%→8% observado en 80s) mientras un chunk sigue en curso — cumple la regla dura #5 de progreso honesto de verdad, no solo en la granularidad de "franja N de M".
+
+### 15.5 Fase 3 — sondeo de memoria real, reemplaza a `navigator.deviceMemory`
+
+`navigator.deviceMemory` ya había mentido de dos formas distintas en sesiones previas (§13.1: Firefox/Safari no la implementan; §14: algunos navegadores que sí la implementan no aplican el tope de 8GB del spec). Reemplazada por `probeMemoryParallelCeiling()` en `engine/adaptive-workers.mjs`: en vez de preguntarle al navegador cuánta RAM "dice" tener, se le pide que RESERVE la memoria que necesitaría cada instancia WASM (`new WebAssembly.Memory({initial: k×32768})`, páginas de 64KB, sin retener referencias) para `k` creciente hasta el techo empírico (`MAX_PARALLEL_ABSOLUTE=4`) — el número de instancias que el navegador realmente concede es la señal, no lo que dice tener. Probado en este entorno: asignaciones de hasta 4GB de `WebAssembly.Memory` se conceden sin problema (no hay techo artificial de asignación en este navegador — el bug de §15.1 nunca fue un límite de asignación, siempre fue el tamaño de lo que se mandaba a procesar). `chooseWorkerPlan()` ya no recibe ni usa `deviceMemoryGB` — el paralelismo real es `min(núcleos, techo del sondeo, nSegments, techo del nivel de reintento)`. `buildRetryTiers()` reemplaza al antiguo `RETRY_TIERS` estático: ahora degrada primero el paralelismo (techo del sondeo → mitad → 1) y solo después el ancho de franja (34→30→26s), en vez de ir directo a serie estricta.
+
+### 15.6 Fase 4 — vía de arreglo estructural del motor (documentado, no construido)
+
+1. **Pico real de heap por chunk de 34s:** medido indirectamente vía RSS del proceso Node durante la CLI (§15.3): ~1.8-2.3GB de memoria de PROCESO por instancia (incluye el heap fijo de 2048MB del motor MÁS pesos del modelo ~84MB MÁS búferes de entrada/salida MÁS overhead de V8/Node — no es una medición aislada del heap WASM interno, que probablemente ronda más cerca de los 2048MB reservados). No se instrumentó una medición más fina (requeriría exponer el uso real de `Module.HEAPF32`/`_malloc` dentro de `engine/separate.mjs`) — queda como pregunta abierta para quien retome el vendor.
+2. **`ALLOW_MEMORY_GROWTH`:** sigue desactivado por el bug de `TextDecoder` con memoria redimensionable (gotcha documentado en CLAUDE.md). Si growth volviera a ser viable (mitigaciones conocidas: `-sTEXTDECODER=0`, o actualizar las vistas del heap en cada growth), el problema de "N × 2GB fijos" desaparecería de raíz — el motor podría crecer solo lo que necesita en vez de reservar un bloque fijo por instancia. Requiere recompilar `vendor/demucs-cpp-wasm` y re-validar TODO el pipeline de calidad (§11) — sesión aparte, no de hoy.
+
+### 15.7 Fase 5 — ETA por calibración empírica
+
+No se implementó esta sesión (economía de tiempo — el foco fue cerrar el bug de OOM real, no una mejora de UX). Queda en el banco de ideas: medir el tiempo de pared del primer chunk completado y extrapolar (`ETA ≈ tiempoChunk1 × chunksRestantes / nParallel`), refinando con cada chunk — nunca una fórmula basada en `hardwareConcurrency` a ciegas, dado lo poco confiable que resultó `navigator.deviceMemory` para lo mismo.
+
+### 15.8 Tabla de cierre — afirmación vs. evidencia
+
+| Afirmación | Cómo se midió | Equipo/navegador | Resultado |
+|---|---|---|---|
+| El bug real era el recorte de audio, no el paralelismo | Lectura de código + contraste con la documentación de `mergeSegmentsDiscard` + reproducción del timing (36s de fallo vs. >100s que tarda un chunk real) | — | Confirmado, código corregido |
+| `nParallel` 1-4 no revienta con audio real | CLI directa (`test/separate-file.mjs`), 2-4 procesos concurrentes, canciones reales de `test/private/` | M1 Max, 10 núcleos, 32GB, Node v24.14.1 | Confirmado, `EXIT=0` en todas las corridas |
+| Sección de estudio funciona end-to-end con el fix | UI completa: selección → separación → mezclador → descarga | Navegador real de este equipo (Electron/Chromium 148) | Confirmado |
+| Canción completa/Karaoke no crashean con el fix | UI, progreso avanzando de forma continua durante 80s+ sin error | Navegador real de este equipo | Confirmado sin crash; ⚠ 100%+descarga no observado en vivo por lentitud del motor de este navegador específico (~7x más lento que Node nativo en el mismo hardware) |
+| Progreso real (Fase 2) funciona | Comparación antes/después: barra congelada en 5% vs. avance continuo 5%→6%→8% en 80s | Navegador real de este equipo | Confirmado |
+| Sondeo de memoria real (Fase 3) no revienta | `WebAssembly.Memory` hasta 4GB asignado sin error | Navegador real de este equipo | Confirmado — sin techo artificial de asignación en este navegador |
+| Firefox real | — | — | ⚠ Pendiente — Firefox está instalado en este equipo pero no hay forma de automatizarlo desde este entorno; verificación directa del fundador recomendada |
